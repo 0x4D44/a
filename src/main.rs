@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -306,7 +305,6 @@ fn main() {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use std::fs;
 
     fn create_test_manager() -> (AliasManager, TempDir) {
         let temp_dir = TempDir::new().unwrap();
