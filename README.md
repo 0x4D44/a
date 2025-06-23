@@ -11,29 +11,108 @@ A cross-platform command alias management tool written in Rust. Provides a simpl
 - **Persistent**: Aliases are stored in JSON configuration file
 - **Colorized output**: Easy-to-read colored terminal output
 - **Overwrite protection**: Prevents accidental alias overwrites with confirmation prompts
-- **Command chaining**: Chain multiple commands together with `&&` operator
+- **Advanced command chaining**: Sophisticated workflow automation with multiple operators
+- **Parallel execution**: Run multiple commands simultaneously with thread synchronization
+- **Conditional logic**: Smart execution based on exit codes and success/failure states
+- **Progress feedback**: Clear visibility into execution progress and command flow
+- **Backward compatibility**: Seamless migration from older versions
+- **Cross-platform security**: No shell dependency eliminates injection vulnerabilities
 
 ## Command Chaining
 
-The `--chain` option allows you to chain multiple commands together using the `&&` operator. This means subsequent commands only run if the previous command succeeds.
+The alias manager supports sophisticated command chaining with multiple operators for complex workflow automation. Commands can be chained with different conditional logic and execution modes.
+
+### Operators Available:
+
+**Sequential Operators (default execution mode):**
+- **`--and`** (&&): Run if previous command succeeded (exit code 0)
+- **`--or`** (||): Run if previous command failed (exit code ≠ 0)  
+- **`--always`** (;): Always run regardless of previous command result
+- **`--if-code <N>`** (?[N]): Run only if previous command exit code equals N
+- **`--chain`** (legacy): Same as `--and` for backward compatibility
+
+**Execution Modes:**
+- **Sequential** (default): Commands run one after another with conditional logic
+- **Parallel** (`--parallel`): All commands run simultaneously in separate threads
+
+### How Sequential Execution Works:
+- Commands execute **one at a time** in the order specified
+- Each operator checks the **exit code** of the previous command
+- **Progress feedback**: Shows which step is executing (e.g., `[2/4] (&&) Executing: npm test`)
+- **Skip logic**: Commands that don't meet their condition are skipped with explanation
+- **Additional arguments**: Passed only to the **last command** in the chain
+- **Interrupt handling**: Ctrl+C stops current command and terminates the chain
 
 ### Examples:
+
 ```bash
-# Build, test, and deploy (each step only runs if previous succeeds)
-a --add deploy "npm run build" --chain "npm test" --chain "npm run deploy"
+# Simple sequential execution (equivalent to shell &&)
+a --add deploy "npm run build" --and "npm test" --and "npm run deploy"
 
-# Create project structure
-a --add newproj "mkdir myproject" --chain "cd myproject" --chain "git init"
+# Complex conditional logic - run deploy if tests pass, or show error if they fail
+a --add smart "npm test" --and "npm run deploy" --or "echo 'Tests failed!'"
 
-# Multiple chains can be mixed with other options
-a --add fullbuild "cargo build" --chain "cargo test" --desc "Build and test" --force
+# Exit code handling - different actions based on specific exit codes
+a --add check "npm test" --if-code 0 "echo 'All good!'" --if-code 1 "echo 'Tests failed'"
+
+# Always run cleanup regardless of success/failure
+a --add build "npm run build" --and "npm run deploy" --always "npm run cleanup"
+
+# Parallel execution - all commands run simultaneously
+a --add lint "npm run lint" --and "npm run test" --and "npm run typecheck" --parallel
+
+# Mixed operators in complex workflow
+a --add deploy "npm run build" --and "npm test" --and "npm run deploy" --or "npm run rollback" --always "npm run notify"
 ```
 
-### How it works:
-- Each `--chain` command is appended with ` && `
-- Commands are executed sequentially
-- If any command fails (non-zero exit code), the chain stops
-- You can use `--chain` multiple times in a single command
+### Execution Output Examples:
+
+**Sequential with skipping:**
+```bash
+a deploy  # If tests fail
+[1/4] Executing: npm run build
+[2/4] (&&) Executing: npm test  
+[3/4] Skipping: npm run deploy (previous command failed)
+[4/4] (;) Executing: npm run cleanup
+```
+
+**Parallel execution:**
+```bash
+a lint
+Executing 3 commands in parallel
+Started: npm run lint
+Started: npm run test  
+Started: npm run typecheck
+Completed [1]: exit code 0
+Completed [2]: exit code 0
+Completed [3]: exit code 0
+All parallel commands completed successfully
+```
+
+### Design Benefits:
+- **Cross-platform**: No shell dependency, works identically on Windows/Linux/macOS
+- **Predictable**: Each command executes exactly as specified, no shell interpretation
+- **Secure**: No shell injection vulnerabilities  
+- **Clear feedback**: User sees exactly what's running, what's skipped, and why
+- **Flexible**: Mix and match operators for complex workflow logic
+- **Robust error handling**: Failed commands don't crash the chain, just affect flow
+- **Thread-safe**: Parallel execution uses proper synchronization
+
+### Advanced Use Cases:
+
+```bash
+# Deployment with rollback capability
+a --add deploy "npm run build" --and "npm run test" --and "deploy.sh" --or "rollback.sh" --always "cleanup.sh"
+
+# Development workflow with multiple checks
+a --add check "npm run lint" --and "npm run test" --and "npm run audit" --or "npm run fix" --parallel
+
+# Exit-code specific handling  
+a --add git-check "git status --porcelain" --if-code 0 "echo 'Clean!'" --if-code 1 "git add . && git commit -m 'Auto commit'"
+
+# Complex parallel testing
+a --add test-all "npm run unit-tests" --and "npm run integration-tests" --and "npm run e2e-tests" --parallel
+```
 
 ## Installation
 
@@ -226,5 +305,16 @@ This design eliminates conflicts between management commands and user aliases wh
 - **v1.0.0**: 
   - Added colorized output, single-line list format, version display, config location command
   - Improved overwrite protection with proper "Added" vs "Updated" messaging
-  - Added command chaining support with `--chain` option
-  - Fixed messaging bug where new aliases incorrectly showed "Updated"
+  - **MAJOR ENHANCEMENT**: Advanced command chaining with multiple operators:
+    - **`--and`** (&&): Run if previous succeeded
+    - **`--or`** (||): Run if previous failed
+    - **`--always`** (;): Always run regardless
+    - **`--if-code <N>`**: Run if previous exit code equals N
+    - **`--parallel`**: Execute all commands simultaneously
+  - Enhanced execution engine with sophisticated conditional logic
+  - Added parallel execution support with thread synchronization  
+  - Comprehensive progress feedback and skip notifications
+  - Backward compatibility with legacy `--chain` commands
+  - Added config file migration for seamless upgrades
+  - Fixed critical chaining bug with proper sequential execution
+  - Enhanced error handling with graceful failure modes
