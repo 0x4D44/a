@@ -1,8 +1,20 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+
+const VERSION: &str = "1.0.0";
+
+// ANSI color codes
+const COLOR_RESET: &str = "\x1b[0m";
+const COLOR_BOLD: &str = "\x1b[1m";
+const COLOR_GREEN: &str = "\x1b[32m";
+const COLOR_BLUE: &str = "\x1b[34m";
+const COLOR_CYAN: &str = "\x1b[36m";
+const COLOR_YELLOW: &str = "\x1b[33m";
+const COLOR_GRAY: &str = "\x1b[90m";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct AliasEntry {
@@ -23,9 +35,14 @@ impl Config {
         }
     }
 
-    fn add_alias(&mut self, name: String, command: String, description: Option<String>) -> Result<(), String> {
+    fn add_alias(&mut self, name: String, command: String, description: Option<String>, force: bool) -> Result<bool, String> {
         if name.starts_with("--") || name.contains("mgr:") || name.starts_with(".") {
             return Err(format!("Invalid alias name '{}': cannot use reserved prefixes", name));
+        }
+
+        let is_overwrite = self.aliases.contains_key(&name);
+        if is_overwrite && !force {
+            return Ok(false); // Signal that confirmation is needed
         }
 
         let entry = AliasEntry {
@@ -35,7 +52,7 @@ impl Config {
         };
         
         self.aliases.insert(name, entry);
-        Ok(())
+        Ok(true) // Successfully added/updated
     }
 
     fn remove_alias(&mut self, name: &str) -> Result<(), String> {
@@ -114,9 +131,57 @@ impl AliasManager {
             .map_err(|e| format!("Failed to save config file: {}", e))
     }
 
-    fn add_alias(&mut self, name: String, command: String, description: Option<String>) -> Result<(), String> {
-        self.config.add_alias(name, command, description)?;
-        self.save_config()
+    fn add_alias(&mut self, name: String, command: String, description: Option<String>, force: bool) -> Result<(), String> {
+        // Check if alias already exists before making changes
+        let alias_existed = self.config.aliases.contains_key(&name);
+        
+        // Check if alias exists and get confirmation if needed
+        let confirmed_force = if alias_existed && !force {
+            let existing = self.config.get_alias(&name).unwrap();
+            println!("{}Alias '{}' already exists:{}", COLOR_YELLOW, name, COLOR_RESET);
+            println!("  {}Current:{} {}", COLOR_CYAN, COLOR_RESET, existing.command);
+            if let Some(desc) = &existing.description {
+                println!("  {}Description:{} {}", COLOR_CYAN, COLOR_RESET, desc);
+            }
+            println!("  {}New:{} {}", COLOR_CYAN, COLOR_RESET, command);
+            
+            if !Self::confirm_overwrite()? {
+                println!("{}Alias not modified.{}", COLOR_GRAY, COLOR_RESET);
+                return Ok(());
+            }
+            true // User confirmed, so force the update
+        } else {
+            force // Use the original force value
+        };
+
+        match self.config.add_alias(name.clone(), command, description, confirmed_force) {
+            Ok(true) => {
+                self.save_config()?;
+                if alias_existed {
+                    println!("{}Updated alias '{}'{}",COLOR_GREEN, name, COLOR_RESET);
+                } else {
+                    println!("{}Added alias '{}'{}",COLOR_GREEN, name, COLOR_RESET);
+                }
+                Ok(())
+            }
+            Ok(false) => {
+                // This shouldn't happen with the current logic, but handle it gracefully
+                Err("Unexpected confirmation state".to_string())
+            }
+            Err(e) => Err(e)
+        }
+    }
+
+    fn confirm_overwrite() -> Result<bool, String> {
+        print!("{}Overwrite? (y/N):{} ", COLOR_YELLOW, COLOR_RESET);
+        io::stdout().flush().map_err(|e| format!("Failed to flush stdout: {}", e))?;
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)
+            .map_err(|e| format!("Failed to read input: {}", e))?;
+        
+        let response = input.trim().to_lowercase();
+        Ok(response == "y" || response == "yes")
     }
 
     fn remove_alias(&mut self, name: &str) -> Result<(), String> {
@@ -129,33 +194,48 @@ impl AliasManager {
         
         if aliases.is_empty() {
             if filter.is_some() {
-                println!("No aliases found matching filter.");
+                println!("{}No aliases found matching filter.{}", COLOR_YELLOW, COLOR_RESET);
             } else {
-                println!("No aliases configured.");
+                println!("{}No aliases configured.{}", COLOR_YELLOW, COLOR_RESET);
             }
             return;
         }
 
-        println!("Configured aliases:");
+        println!("{}{}Configured aliases:{}", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+        
+        // Calculate the maximum alias name length for alignment
+        let max_name_len = aliases.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+        let name_width = std::cmp::max(16, ((max_name_len + 4) / 4) * 4); // Minimum 16 chars, rounded to 4
+        
         for (name, entry) in aliases {
-            println!("  {} -> {}", name, entry.command);
+            let padding = name_width.saturating_sub(name.len());
+            let spaces = " ".repeat(padding);
+            
+            print!("  {}{}{}{} -> {}{}{}", 
+                COLOR_GREEN, name, COLOR_RESET, spaces,
+                COLOR_BLUE, entry.command, COLOR_RESET);
+            
             if let Some(desc) = &entry.description {
-                println!("    {}", desc);
+                print!(" {}({}){}", COLOR_GRAY, desc, COLOR_RESET);
             }
-            println!("    (created: {})", entry.created);
-            println!();
+            
+            println!(" {}[{}]{}", COLOR_GRAY, entry.created, COLOR_RESET);
         }
     }
 
     fn which_alias(&self, name: &str) {
         if let Some(entry) = self.config.get_alias(name) {
-            println!("Alias '{}' executes: {}", name, entry.command);
+            println!("{}Alias '{}' executes:{} {}", COLOR_CYAN, name, COLOR_RESET, entry.command);
             if let Some(desc) = &entry.description {
-                println!("Description: {}", desc);
+                println!("{}Description:{} {}", COLOR_CYAN, COLOR_RESET, desc);
             }
         } else {
-            println!("Alias '{}' not found.", name);
+            println!("{}Alias '{}' not found.{}", COLOR_YELLOW, name, COLOR_RESET);
         }
+    }
+
+    fn show_config_location(&self) {
+        println!("{}Config file location:{} {}", COLOR_CYAN, COLOR_RESET, self.config_path.display());
     }
 
     fn execute_alias(&self, name: &str, args: &[String]) -> Result<(), String> {
@@ -195,22 +275,35 @@ impl AliasManager {
 }
 
 fn print_help() {
-    println!("Alias Manager - Cross-platform command alias tool");
+    println!("{}{}Alias Manager v{} - Cross-platform command alias tool{}", 
+             COLOR_BOLD, COLOR_CYAN, VERSION, COLOR_RESET);
     println!();
-    println!("USAGE:");
+    println!("{}USAGE:{}", COLOR_BOLD, COLOR_RESET);
     println!("  a [alias_name] [args...]     Execute an alias");
-    println!("  a --add <name> <command> [--desc \"description\"]");
+    println!("  a --add <n> <command> [--desc \"description\"] [--force] [--chain <command2>]");
     println!("  a --list [filter]            List aliases (optionally filtered)");
-    println!("  a --remove <name>            Remove an alias");
-    println!("  a --which <name>             Show what an alias does");
+    println!("  a --remove <n>               Remove an alias");
+    println!("  a --which <n>                Show what an alias does");
+    println!("  a --config                   Show config file location");
+    println!("  a --version                  Show version information");
     println!("  a --help                     Show this help");
     println!();
-    println!("EXAMPLES:");
+    println!("{}OPTIONS:{}", COLOR_BOLD, COLOR_RESET);
+    println!("  --force                      Overwrite existing alias without confirmation");
+    println!("  --chain <command>            Chain another command with && (can be used multiple times)");
+    println!();
+    println!("{}EXAMPLES:{}", COLOR_BOLD, COLOR_RESET);
     println!("  a --add gst \"git status\" --desc \"Quick git status\"");
-    println!("  a --add deploy \"docker-compose up -d\"");
+    println!("  a --add deploy \"docker-compose up -d\" --force");
+    println!("  a --add build \"npm run build\" --chain \"npm test\" --chain \"npm run deploy\"");
     println!("  a --list git                 # List aliases containing 'git'");
     println!("  a gst                        # Execute the 'gst' alias");
     println!("  a deploy --build             # Execute with additional args");
+}
+
+fn print_version() {
+    println!("{}{}Alias Manager v{}{}", COLOR_BOLD, COLOR_CYAN, VERSION, COLOR_RESET);
+    println!("A cross-platform command alias management tool written in Rust");
 }
 
 fn main() {
@@ -224,7 +317,7 @@ fn main() {
     let mut manager = match AliasManager::new() {
         Ok(mgr) => mgr,
         Err(e) => {
-            eprintln!("Error initializing alias manager: {}", e);
+            eprintln!("{}Error initializing alias manager:{} {}", COLOR_YELLOW, COLOR_RESET, e);
             std::process::exit(1);
         }
     };
@@ -234,25 +327,68 @@ fn main() {
             print_help();
         }
         
+        "--version" | "-v" => {
+            print_version();
+        }
+        
+        "--config" => {
+            manager.show_config_location();
+        }
+        
         "--add" => {
             if args.len() < 4 {
-                eprintln!("Usage: a --add <name> <command> [--desc \"description\"]");
+                eprintln!("{}Usage:{} a --add <n> <command> [--desc \"description\"] [--force] [--chain <command2>]", COLOR_YELLOW, COLOR_RESET);
                 std::process::exit(1);
             }
             
             let name = args[2].clone();
-            let command = args[3].clone();
+            let mut command = args[3].clone();
             
-            let description = if args.len() >= 6 && args[4] == "--desc" {
-                Some(args[5].clone())
-            } else {
-                None
-            };
+            let mut description = None;
+            let mut force = false;
+            let mut chained_commands = Vec::new();
+            let mut i = 4;
             
-            match manager.add_alias(name.clone(), command, description) {
-                Ok(()) => println!("Added alias '{}'", name),
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--desc" => {
+                        if i + 1 < args.len() {
+                            description = Some(args[i + 1].clone());
+                            i += 2;
+                        } else {
+                            eprintln!("{}Error:{} --desc requires a description", COLOR_YELLOW, COLOR_RESET);
+                            std::process::exit(1);
+                        }
+                    }
+                    "--force" => {
+                        force = true;
+                        i += 1;
+                    }
+                    "--chain" => {
+                        if i + 1 < args.len() {
+                            chained_commands.push(args[i + 1].clone());
+                            i += 2;
+                        } else {
+                            eprintln!("{}Error:{} --chain requires a command", COLOR_YELLOW, COLOR_RESET);
+                            std::process::exit(1);
+                        }
+                    }
+                    _ => {
+                        eprintln!("{}Error:{} Unknown option '{}'", COLOR_YELLOW, COLOR_RESET, args[i]);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            
+            // Concatenate chained commands with &&
+            for chained_cmd in chained_commands {
+                command = format!("{} && {}", command, chained_cmd);
+            }
+            
+            match manager.add_alias(name.clone(), command, description, force) {
+                Ok(()) => {}
                 Err(e) => {
-                    eprintln!("Error adding alias: {}", e);
+                    eprintln!("{}Error adding alias:{} {}", COLOR_YELLOW, COLOR_RESET, e);
                     std::process::exit(1);
                 }
             }
@@ -265,14 +401,14 @@ fn main() {
         
         "--remove" => {
             if args.len() < 3 {
-                eprintln!("Usage: a --remove <name>");
+                eprintln!("{}Usage:{} a --remove <n>", COLOR_YELLOW, COLOR_RESET);
                 std::process::exit(1);
             }
             
             match manager.remove_alias(&args[2]) {
-                Ok(()) => println!("Removed alias '{}'", args[2]),
+                Ok(()) => println!("{}Removed alias '{}'{}", COLOR_GREEN, args[2], COLOR_RESET),
                 Err(e) => {
-                    eprintln!("Error removing alias: {}", e);
+                    eprintln!("{}Error removing alias:{} {}", COLOR_YELLOW, COLOR_RESET, e);
                     std::process::exit(1);
                 }
             }
@@ -280,7 +416,7 @@ fn main() {
         
         "--which" => {
             if args.len() < 3 {
-                eprintln!("Usage: a --which <name>");
+                eprintln!("{}Usage:{} a --which <n>", COLOR_YELLOW, COLOR_RESET);
                 std::process::exit(1);
             }
             
@@ -293,7 +429,7 @@ fn main() {
             match manager.execute_alias(alias_name, alias_args) {
                 Ok(()) => {}
                 Err(e) => {
-                    eprintln!("Error executing alias: {}", e);
+                    eprintln!("{}Error executing alias:{} {}", COLOR_YELLOW, COLOR_RESET, e);
                     std::process::exit(1);
                 }
             }
@@ -331,7 +467,8 @@ mod tests {
         let result = config.add_alias(
             "gst".to_string(),
             "git status".to_string(),
-            Some("Quick status".to_string())
+            Some("Quick status".to_string()),
+            false
         );
         
         assert!(result.is_ok());
@@ -352,7 +489,8 @@ mod tests {
             let result = config.add_alias(
                 name.to_string(),
                 "test command".to_string(),
-                None
+                None,
+                false
             );
             assert!(result.is_err());
         }
@@ -362,7 +500,7 @@ mod tests {
     fn test_remove_alias() {
         let mut config = Config::new();
         
-        config.add_alias("test".to_string(), "echo test".to_string(), None).unwrap();
+        config.add_alias("test".to_string(), "echo test".to_string(), None, false).unwrap();
         assert_eq!(config.aliases.len(), 1);
         
         let result = config.remove_alias("test");
@@ -376,7 +514,7 @@ mod tests {
     #[test]
     fn test_get_alias() {
         let mut config = Config::new();
-        config.add_alias("test".to_string(), "echo test".to_string(), None).unwrap();
+        config.add_alias("test".to_string(), "echo test".to_string(), None, false).unwrap();
         
         let entry = config.get_alias("test");
         assert!(entry.is_some());
@@ -390,9 +528,9 @@ mod tests {
     fn test_list_aliases() {
         let mut config = Config::new();
         
-        config.add_alias("gst".to_string(), "git status".to_string(), None).unwrap();
-        config.add_alias("glog".to_string(), "git log".to_string(), None).unwrap();
-        config.add_alias("deploy".to_string(), "docker-compose up".to_string(), None).unwrap();
+        config.add_alias("gst".to_string(), "git status".to_string(), None, false).unwrap();
+        config.add_alias("glog".to_string(), "git log".to_string(), None, false).unwrap();
+        config.add_alias("deploy".to_string(), "docker-compose up".to_string(), None, false).unwrap();
         
         let all_aliases = config.list_aliases(None);
         assert_eq!(all_aliases.len(), 3);
@@ -411,7 +549,8 @@ mod tests {
         manager.add_alias(
             "test".to_string(),
             "echo hello".to_string(),
-            Some("Test command".to_string())
+            Some("Test command".to_string()),
+            false
         ).unwrap();
         
         // Load a new manager from the saved config
@@ -429,7 +568,7 @@ mod tests {
     fn test_manager_add_remove() {
         let (mut manager, _temp_dir) = create_test_manager();
         
-        assert!(manager.add_alias("test".to_string(), "echo test".to_string(), None).is_ok());
+        assert!(manager.add_alias("test".to_string(), "echo test".to_string(), None, false).is_ok());
         assert!(manager.config.get_alias("test").is_some());
         
         assert!(manager.remove_alias("test").is_ok());
@@ -441,7 +580,7 @@ mod tests {
     #[test]
     fn test_serialize_deserialize() {
         let mut config = Config::new();
-        config.add_alias("test".to_string(), "echo test".to_string(), Some("Test".to_string())).unwrap();
+        config.add_alias("test".to_string(), "echo test".to_string(), Some("Test".to_string()), false).unwrap();
         
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: Config = serde_json::from_str(&json).unwrap();
