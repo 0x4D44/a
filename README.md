@@ -1,4 +1,4 @@
-# Alias Manager (`a`) v1.0.0
+# Alias Manager (`a`) v1.1.0
 
 A cross-platform command alias management tool written in Rust. Provides a simple way to create, manage, and execute command aliases that work on both Windows and Linux.
 
@@ -9,7 +9,8 @@ A cross-platform command alias management tool written in Rust. Provides a simpl
 - **Simple**: Single binary with intuitive command interface
 - **Safe**: Reserved namespace prevents conflicts with management commands
 - **Persistent**: Aliases are stored in JSON configuration file
-- **Colorized output**: Easy-to-read colored terminal output
+- **Enhanced UX**: Beautiful colorized output with emojis and visual hierarchy
+- **Interactive help**: Optional examples with user-friendly prompts
 - **Overwrite protection**: Prevents accidental alias overwrites with confirmation prompts
 - **Advanced command chaining**: Sophisticated workflow automation with multiple operators
 - **Parallel execution**: Run multiple commands simultaneously with thread synchronization
@@ -301,6 +302,13 @@ The tool uses a dispatcher pattern where:
 This design eliminates conflicts between management commands and user aliases while providing a clean, intuitive interface with enhanced visual feedback.
 
 ## Version History
+
+- **v1.1.0**:
+  - **Enhanced Help System**: Interactive help with optional examples
+  - **Improved UX**: Added emojis and enhanced color coding throughout interface
+  - **Better Navigation**: Examples are now optional (prompted) to reduce information overload
+  - **Visual Polish**: More colorful and organized help display
+  - **User-Friendly**: Pause before examples with Y/n prompt (Enter defaults to yes)
 
 - **v1.0.0**: 
   - Added colorized output, single-line list format, version display, config location command

@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-const VERSION: &str = "1.0.0";
+const VERSION: &str = "1.1.0";
 
 // ANSI color codes
 const COLOR_RESET: &str = "\x1b[0m";
@@ -620,52 +620,132 @@ impl AliasManager {
 }
 
 fn print_help() {
-    println!("{}{}Alias Manager v{} - Cross-platform command alias tool{}", 
+    // Main help content
+    println!("{}{}🚀 Alias Manager v{} - Cross-platform command alias tool{}", 
              COLOR_BOLD, COLOR_CYAN, VERSION, COLOR_RESET);
     println!();
-    println!("{}USAGE:{}", COLOR_BOLD, COLOR_RESET);
-    println!("  a [alias_name] [args...]     Execute an alias");
-    println!("  a --add <n> <command> [OPTIONS]");
-    println!("  a --list [filter]            List aliases (optionally filtered)");
-    println!("  a --remove <n>               Remove an alias");
-    println!("  a --which <n>                Show what an alias does");
-    println!("  a --config                   Show config file location");
-    println!("  a --version                  Show version information");
-    println!("  a --help                     Show this help");
+    
+    println!("{}📋 USAGE:{}", COLOR_BOLD, COLOR_RESET);
+    println!("  {}a{} {}[alias_name] [args...]{}     Execute an alias", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--add <n> <command> [OPTIONS]{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--list [filter]{}            List aliases (optionally filtered)", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--remove <n>{}               Remove an alias", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--which <n>{}                Show what an alias does", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--config{}                   Show config file location", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--version{}                  Show version information", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--help{}                     Show this help", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
     println!();
-    println!("{}ADD OPTIONS:{}", COLOR_BOLD, COLOR_RESET);
-    println!("  --desc \"description\"        Add a description");
-    println!("  --force                      Overwrite existing alias without confirmation");
-    println!("  --chain <command>            Legacy: Chain with && (same as --and)");
-    println!("  --and <command>              Chain command (run if previous succeeded)");
-    println!("  --or <command>               Chain command (run if previous failed)");
-    println!("  --always <command>           Chain command (always run regardless)");
-    println!("  --if-code <N> <command>      Chain command (run if previous exit code = N)");
-    println!("  --parallel                   Execute all commands in parallel");
+    
+    println!("{}⚙️  ADD OPTIONS:{}", COLOR_BOLD, COLOR_RESET);
+    println!("  {}--desc{} {}\"description\"{}        Add a description", 
+             COLOR_YELLOW, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
+    println!("  {}--force{}                      Overwrite existing alias without confirmation", 
+             COLOR_YELLOW, COLOR_RESET);
+    println!("  {}--chain{} {}<command>{}            Legacy: Chain with && (same as --and)", 
+             COLOR_YELLOW, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
     println!();
-    println!("{}EXAMPLES:{}", COLOR_BOLD, COLOR_RESET);
-    println!("  # Simple alias");
-    println!("  a --add gst \"git status\" --desc \"Quick git status\"");
+    
+    println!("{}🔗 CHAINING OPERATORS:{}", COLOR_BOLD, COLOR_RESET);
+    println!("  {}--and{} {}<command>{}              Chain command (run if previous succeeded)", 
+             COLOR_GREEN, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
+    println!("  {}--or{} {}<command>{}               Chain command (run if previous failed)", 
+             COLOR_YELLOW, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
+    println!("  {}--always{} {}<command>{}           Chain command (always run regardless)", 
+             COLOR_BLUE, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
+    println!("  {}--if-code{} {}<N> <command>{}      Chain command (run if previous exit code = N)", 
+             COLOR_CYAN, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
+    println!("  {}--parallel{}                   Execute all commands in parallel", 
+             COLOR_CYAN, COLOR_RESET);
     println!();
-    println!("  # Sequential execution (default)");
-    println!("  a --add deploy \"npm run build\" --and \"npm test\" --and \"npm run deploy\"");
+
+    // Ask if user wants to see examples
+    if should_show_examples() {
+        print_examples();
+    } else {
+        println!("{}💡 Tip:{} Use {}a --help{} and press {}Enter{} to see detailed examples", 
+                 COLOR_CYAN, COLOR_RESET, COLOR_GREEN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET);
+    }
+}
+
+fn should_show_examples() -> bool {
+    print!("{}📚 Show detailed examples? (Y/n):{} ", COLOR_CYAN, COLOR_RESET);
+    io::stdout().flush().unwrap_or(());
+    
+    let mut input = String::new();
+    match io::stdin().read_line(&mut input) {
+        Ok(_) => {
+            let response = input.trim().to_lowercase();
+            response.is_empty() || response == "y" || response == "yes"
+        }
+        Err(_) => true // Default to showing examples if input fails
+    }
+}
+
+fn print_examples() {
     println!();
-    println!("  # Complex conditional logic");
-    println!("  a --add smart \"npm test\" --and \"npm run deploy\" --or \"echo 'Tests failed!'\"");
+    println!("{}📖 EXAMPLES:{}", COLOR_BOLD, COLOR_RESET);
     println!();
-    println!("  # Exit code handling");
-    println!("  a --add check \"npm test\" --if-code 0 \"echo 'All good!'\" --if-code 1 \"echo 'Tests failed'\"");
+    
+    println!("  {}# Simple alias{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} gst {}\"git status\"{} {}--desc{} {}\"Quick git status\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET, 
+             COLOR_YELLOW, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
     println!();
-    println!("  # Parallel execution");
-    println!("  a --add build \"npm run lint\" --and \"npm run test\" --parallel");
+    
+    println!("  {}# Sequential execution (default){}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} deploy {}\"npm run build\"{} {}--and{} {}\"npm test\"{} {}--and{} {}\"npm run deploy\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
     println!();
-    println!("  # Always run cleanup");
-    println!("  a --add deploy \"npm run build\" --and \"npm run deploy\" --always \"npm run cleanup\"");
+    
+    println!("  {}# Complex conditional logic{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} smart {}\"npm test\"{} {}--and{} {}\"npm run deploy\"{} {}--or{} {}\"echo 'Tests failed!'\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_YELLOW, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!();
+    
+    println!("  {}# Exit code handling{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} check {}\"npm test\"{} {}--if-code{} {}0{} {}\"echo 'All good!'\"{} {}--if-code{} {}1{} {}\"echo 'Tests failed'\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_CYAN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_CYAN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!();
+    
+    println!("  {}# Parallel execution{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} build {}\"npm run lint\"{} {}--and{} {}\"npm run test\"{} {}--parallel{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_CYAN, COLOR_RESET);
+    println!();
+    
+    println!("  {}# Always run cleanup{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} deploy {}\"npm run build\"{} {}--and{} {}\"npm run deploy\"{} {}--always{} {}\"npm run cleanup\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_BLUE, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!();
+    
+    println!("{}🎯 Pro Tips:{}", COLOR_BOLD, COLOR_RESET);
+    println!("  • Use {}--parallel{} for independent tasks that can run simultaneously", COLOR_CYAN, COLOR_RESET);
+    println!("  • Combine {}--and{} and {}--or{} for robust deployment workflows", COLOR_GREEN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET);
+    println!("  • Use {}--always{} for cleanup tasks that must run regardless", COLOR_BLUE, COLOR_RESET);
+    println!("  • {}--if-code{} enables sophisticated conditional logic", COLOR_CYAN, COLOR_RESET);
 }
 
 fn print_version() {
-    println!("{}{}Alias Manager v{}{}", COLOR_BOLD, COLOR_CYAN, VERSION, COLOR_RESET);
-    println!("A cross-platform command alias management tool written in Rust");
+    println!("{}{}🚀 Alias Manager v{}{}", COLOR_BOLD, COLOR_CYAN, VERSION, COLOR_RESET);
+    println!("{}⚡ A cross-platform command alias management tool written in Rust{}", COLOR_GRAY, COLOR_RESET);
+    println!("{}🔗 Features: Advanced chaining, parallel execution, conditional logic{}", COLOR_BLUE, COLOR_RESET);
 }
 
 fn main() {
