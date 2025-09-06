@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-const VERSION: &str = "1.1.0";
+const VERSION: &str = "1.2.0";
 
 // ANSI color codes
 const COLOR_RESET: &str = "\x1b[0m";
@@ -335,6 +335,36 @@ impl AliasManager {
                 println!("{}Description:{} {}", COLOR_CYAN, COLOR_RESET, desc);
             }
             
+            // Check if any commands contain parameter variables
+            let has_variables = match &entry.command_type {
+                CommandType::Simple(cmd) => Self::has_parameter_variables(cmd),
+                CommandType::Chain(chain) => chain.commands.iter().any(|cmd| Self::has_parameter_variables(&cmd.command)),
+            };
+            
+            // Show parameter substitution examples if variables are present
+            if has_variables {
+                println!("{}Parameter substitution example:{}", COLOR_CYAN, COLOR_RESET);
+                let example_args = vec!["arg1".to_string(), "arg2".to_string(), "arg3".to_string()];
+                
+                match &entry.command_type {
+                    CommandType::Simple(cmd) => {
+                        let resolved = Self::substitute_parameters(cmd, &example_args);
+                        println!("  {}a{} {} {}arg1 arg2 arg3{}", COLOR_GREEN, COLOR_RESET, name, COLOR_YELLOW, COLOR_RESET);
+                        println!("  {}Resolves to:{} {}", COLOR_GRAY, COLOR_RESET, resolved);
+                    }
+                    CommandType::Chain(chain) => {
+                        println!("  {}a{} {} {}arg1 arg2 arg3{}", COLOR_GREEN, COLOR_RESET, name, COLOR_YELLOW, COLOR_RESET);
+                        println!("  {}Resolves to:{}", COLOR_GRAY, COLOR_RESET);
+                        for (i, chain_cmd) in chain.commands.iter().enumerate() {
+                            let resolved = Self::substitute_parameters(&chain_cmd.command, &example_args);
+                            let op_prefix = if i > 0 { " && " } else { "" };
+                            println!("    {}{}{}", COLOR_BLUE, op_prefix, resolved);
+                        }
+                    }
+                }
+                println!();
+            }
+            
             // Show detailed breakdown for complex chains
             if let CommandType::Chain(chain) = &entry.command_type {
                 println!("{}Command breakdown:{}", COLOR_CYAN, COLOR_RESET);
@@ -346,7 +376,8 @@ impl AliasManager {
                         Some(ChainOperator::IfCode(code)) => &format!(" (run if previous exit code = {})", code),
                         None => "",
                     };
-                    println!("  {}{}. {}{}{}{}", COLOR_GRAY, i + 1, COLOR_RESET, chain_cmd.command, COLOR_GRAY, op_desc);
+                    let has_vars = if Self::has_parameter_variables(&chain_cmd.command) { " 📋" } else { "" };
+                    println!("  {}{}. {}{}{}{}{}", COLOR_GRAY, i + 1, COLOR_RESET, chain_cmd.command, has_vars, COLOR_GRAY, op_desc);
                 }
                 if chain.parallel {
                     println!("{}Execution mode:{} Parallel", COLOR_CYAN, COLOR_RESET);
@@ -361,6 +392,42 @@ impl AliasManager {
 
     fn show_config_location(&self) {
         println!("{}Config file location:{} {}", COLOR_CYAN, COLOR_RESET, self.config_path.display());
+    }
+
+    fn export_config(&self, target_path: Option<&str>) -> Result<(), String> {
+        // Determine target directory - current directory if not specified
+        let target_dir = if let Some(path) = target_path {
+            PathBuf::from(path)
+        } else {
+            env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?
+        };
+
+        // Ensure target is a directory (or create it if it doesn't exist)
+        if target_dir.exists() && !target_dir.is_dir() {
+            return Err(format!("Target path '{}' exists but is not a directory", target_dir.display()));
+        }
+
+        if !target_dir.exists() {
+            fs::create_dir_all(&target_dir)
+                .map_err(|e| format!("Failed to create target directory '{}': {}", target_dir.display(), e))?;
+        }
+
+        // Construct target file path
+        let target_file = target_dir.join("config.json");
+
+        // Check if source config file exists
+        if !self.config_path.exists() {
+            return Err("Source config file does not exist. Create some aliases first.".to_string());
+        }
+
+        // Copy the config file
+        fs::copy(&self.config_path, &target_file)
+            .map_err(|e| format!("Failed to copy config file: {}", e))?;
+
+        println!("{}Config exported to:{} {}", COLOR_GREEN, COLOR_RESET, target_file.display());
+        println!("{}File contains {} aliases{}", COLOR_GRAY, self.config.aliases.len(), COLOR_RESET);
+        
+        Ok(())
     }
 
     fn execute_alias(&self, name: &str, args: &[String]) -> Result<(), String> {
@@ -442,8 +509,14 @@ impl AliasManager {
                 continue;
             }
 
-            // Only add additional args to the last command in the chain
-            let args_to_use = if index == chain.commands.len() - 1 { additional_args } else { &[] };
+            // If any command in the chain has parameter variables, pass args to all commands
+            // Otherwise, only pass args to the last command (backward compatibility)
+            let has_vars_in_chain = chain.commands.iter().any(|cmd| Self::has_parameter_variables(&cmd.command));
+            let args_to_use = if has_vars_in_chain || index == chain.commands.len() - 1 { 
+                additional_args 
+            } else { 
+                &[] 
+            };
             
             let op_desc = match &chain_cmd.operator {
                 Some(ChainOperator::And) => " (&&)",
@@ -457,14 +530,11 @@ impl AliasManager {
                      COLOR_GRAY, index + 1, chain.commands.len(), COLOR_RESET, op_desc,
                      COLOR_CYAN, chain_cmd.command, COLOR_RESET);
             
-            last_exit_code = match self.execute_single_command_with_exit_code(&chain_cmd.command, args_to_use) {
-                Ok(code) => code,
-                Err(_) => {
-                    // Command failed to execute (e.g., program not found)
-                    // Treat this as exit code 127 (command not found) and continue
-                    127
-                }
-            };
+            last_exit_code = self.execute_single_command_with_exit_code(&chain_cmd.command, args_to_use).unwrap_or({
+                // Command failed to execute (e.g., program not found)
+                // Treat this as exit code 127 (command not found) and continue
+                127
+            });
         }
         
         println!("{}Sequential command chain completed{}", COLOR_GREEN, COLOR_RESET);
@@ -483,7 +553,10 @@ impl AliasManager {
         for (index, chain_cmd) in chain.commands.iter().enumerate() {
             let cmd = chain_cmd.command.clone();
             let cmd_display = cmd.clone(); // Clone for display purposes
-            let args = if index == chain.commands.len() - 1 { 
+            // If any command in the chain has parameter variables, pass args to all commands
+            // Otherwise, only pass args to the last command (backward compatibility)
+            let has_vars_in_chain = chain.commands.iter().any(|cmd| Self::has_parameter_variables(&cmd.command));
+            let args = if has_vars_in_chain || index == chain.commands.len() - 1 { 
                 additional_args.to_vec() 
             } else { 
                 Vec::new() 
@@ -540,14 +613,26 @@ impl AliasManager {
     }
 
     fn execute_single_command_with_exit_code(&self, command_str: &str, args: &[String]) -> Result<i32, String> {
-        let mut command_parts: Vec<&str> = command_str.split_whitespace().collect();
+        // Apply parameter substitution if the command contains variables
+        let resolved_command = if Self::has_parameter_variables(command_str) {
+            Self::substitute_parameters(command_str, args)
+        } else {
+            command_str.to_string()
+        };
+        
+        let mut command_parts: Vec<&str> = resolved_command.split_whitespace().collect();
         
         if command_parts.is_empty() {
             return Err("Empty command in alias".to_string());
         }
 
         let program = command_parts.remove(0);
-        command_parts.extend(args.iter().map(|s| s.as_str()));
+        
+        // For backward compatibility: if no parameter variables were found, 
+        // append args to maintain existing behavior
+        if !Self::has_parameter_variables(command_str) {
+            command_parts.extend(args.iter().map(|s| s.as_str()));
+        }
 
         let mut cmd = Command::new(program);
         cmd.args(&command_parts);
@@ -564,14 +649,26 @@ impl AliasManager {
     }
 
     fn execute_command_static(command_str: &str, args: &[String]) -> Result<i32, String> {
-        let mut command_parts: Vec<&str> = command_str.split_whitespace().collect();
+        // Apply parameter substitution if the command contains variables
+        let resolved_command = if Self::has_parameter_variables(command_str) {
+            Self::substitute_parameters(command_str, args)
+        } else {
+            command_str.to_string()
+        };
+        
+        let mut command_parts: Vec<&str> = resolved_command.split_whitespace().collect();
         
         if command_parts.is_empty() {
             return Err("Empty command in alias".to_string());
         }
 
         let program = command_parts.remove(0);
-        command_parts.extend(args.iter().map(|s| s.as_str()));
+        
+        // For backward compatibility: if no parameter variables were found, 
+        // append args to maintain existing behavior
+        if !Self::has_parameter_variables(command_str) {
+            command_parts.extend(args.iter().map(|s| s.as_str()));
+        }
 
         let mut cmd = Command::new(program);
         cmd.args(&command_parts);
@@ -588,14 +685,26 @@ impl AliasManager {
     }
 
     fn execute_single_command(&self, command_str: &str, args: &[String]) -> Result<(), String> {
-        let mut command_parts: Vec<&str> = command_str.split_whitespace().collect();
+        // Apply parameter substitution if the command contains variables
+        let resolved_command = if Self::has_parameter_variables(command_str) {
+            Self::substitute_parameters(command_str, args)
+        } else {
+            command_str.to_string()
+        };
+        
+        let mut command_parts: Vec<&str> = resolved_command.split_whitespace().collect();
         
         if command_parts.is_empty() {
             return Err("Empty command in alias".to_string());
         }
 
         let program = command_parts.remove(0);
-        command_parts.extend(args.iter().map(|s| s.as_str()));
+        
+        // For backward compatibility: if no parameter variables were found, 
+        // append args to maintain existing behavior
+        if !Self::has_parameter_variables(command_str) {
+            command_parts.extend(args.iter().map(|s| s.as_str()));
+        }
 
         let mut cmd = Command::new(program);
         cmd.args(&command_parts);
@@ -617,6 +726,81 @@ impl AliasManager {
 
         Ok(())
     }
+    fn substitute_parameters(command: &str, args: &[String]) -> String {
+        let mut result = String::new();
+        let mut chars = command.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            if ch == '$' {
+                if let Some(&next_ch) = chars.peek() {
+                    match next_ch {
+                        '$' => {
+                            // $$ -> literal $
+                            chars.next(); // consume the second $
+                            result.push('$');
+                        }
+                        '@' => {
+                            // $@ -> all arguments as separate parameters (space-separated)
+                            chars.next(); // consume the @
+                            result.push_str(&args.join(" "));
+                        }
+                        '*' => {
+                            // $* -> all arguments as single string (space-separated)
+                            chars.next(); // consume the *
+                            result.push_str(&args.join(" "));
+                        }
+                        '0'..='9' => {
+                            // $N -> Nth argument (1-indexed)
+                            let digit_char = chars.next().unwrap();
+                            if let Some(digit) = digit_char.to_digit(10) {
+                                let index = digit as usize;
+                                if index > 0 && index <= args.len() {
+                                    result.push_str(&args[index - 1]);
+                                }
+                                // If index is out of bounds, substitute with empty string
+                            }
+                        }
+                        _ => {
+                            // $ followed by non-special character, treat as literal
+                            result.push(ch);
+                        }
+                    }
+                } else {
+                    // $ at end of string, treat as literal
+                    result.push(ch);
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+        
+        result
+    }
+
+    fn has_parameter_variables(command: &str) -> bool {
+        let mut chars = command.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            if ch == '$' {
+                if let Some(&next_ch) = chars.peek() {
+                    match next_ch {
+                        '$' => {
+                            chars.next(); // consume the second $
+                        }
+                        '@' | '*' => {
+                            return true;
+                        }
+                        '0'..='9' => {
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        false
+    }
 }
 
 fn print_help() {
@@ -637,6 +821,8 @@ fn print_help() {
     println!("  {}a{} {}--which <n>{}                Show what an alias does", 
              COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
     println!("  {}a{} {}--config{}                   Show config file location", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} {}--export [dir]{}             Export config to directory (default: current)", 
              COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
     println!("  {}a{} {}--version{}                  Show version information", 
              COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
@@ -664,6 +850,17 @@ fn print_help() {
              COLOR_CYAN, COLOR_RESET, COLOR_GRAY, COLOR_RESET);
     println!("  {}--parallel{}                   Execute all commands in parallel", 
              COLOR_CYAN, COLOR_RESET);
+    println!();
+    
+    println!("{}📋 PARAMETER SUBSTITUTION:{}", COLOR_BOLD, COLOR_RESET);
+    println!("  {}$1, $2, $3...{}               Substitute with 1st, 2nd, 3rd argument", 
+             COLOR_GREEN, COLOR_RESET);
+    println!("  {}$@{}                          Substitute with all arguments", 
+             COLOR_GREEN, COLOR_RESET);
+    println!("  {}$*{}                          Substitute with all arguments", 
+             COLOR_GREEN, COLOR_RESET);
+    println!("  {}$${}                          Literal dollar sign", 
+             COLOR_GREEN, COLOR_RESET);
     println!();
 
     // Ask if user wants to see examples
@@ -735,7 +932,32 @@ fn print_examples() {
              COLOR_BLUE, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
     println!();
     
+    println!("  {}# Parameter substitution{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} tag-push {}\"git tag $1\"{} {}--and{} {}\"git push origin $1\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} tag-push {}v1.2.3{}               # Runs: git tag v1.2.3 && git push origin v1.2.3", 
+             COLOR_GREEN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET);
+    println!();
+    
+    println!("  {}# Multiple parameters{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} deploy {}\"docker tag $1:$2\"{} {}--and{} {}\"docker push $1:$2\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET,
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} deploy {}myapp latest{}           # Runs: docker tag myapp:latest && docker push myapp:latest", 
+             COLOR_GREEN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET);
+    println!();
+    
+    println!("  {}# All arguments with $@{}", COLOR_GRAY, COLOR_RESET);
+    println!("  {}a --add{} test-files {}\"pytest $@\"{}", 
+             COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET);
+    println!("  {}a{} test-files {}test1.py test2.py{}   # Runs: pytest test1.py test2.py", 
+             COLOR_GREEN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET);
+    println!();
+    
     println!("{}🎯 Pro Tips:{}", COLOR_BOLD, COLOR_RESET);
+    println!("  • Use {}$1, $2, $3{} to pass arguments to multiple commands in a chain", COLOR_GREEN, COLOR_RESET);
+    println!("  • Use {}$@{} to pass all arguments when you don't know how many there will be", COLOR_GREEN, COLOR_RESET);
     println!("  • Use {}--parallel{} for independent tasks that can run simultaneously", COLOR_CYAN, COLOR_RESET);
     println!("  • Combine {}--and{} and {}--or{} for robust deployment workflows", COLOR_GREEN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET);
     println!("  • Use {}--always{} for cleanup tasks that must run regardless", COLOR_BLUE, COLOR_RESET);
@@ -745,7 +967,7 @@ fn print_examples() {
 fn print_version() {
     println!("{}{}🚀 Alias Manager v{}{}", COLOR_BOLD, COLOR_CYAN, VERSION, COLOR_RESET);
     println!("{}⚡ A cross-platform command alias management tool written in Rust{}", COLOR_GRAY, COLOR_RESET);
-    println!("{}🔗 Features: Advanced chaining, parallel execution, conditional logic{}", COLOR_BLUE, COLOR_RESET);
+    println!("{}🔗 Features: Advanced chaining, parallel execution, conditional logic, parameter substitution{}", COLOR_BLUE, COLOR_RESET);
 }
 
 fn main() {
@@ -775,6 +997,18 @@ fn main() {
         
         "--config" => {
             manager.show_config_location();
+        }
+        
+        "--export" => {
+            let target_path = if args.len() > 2 { Some(args[2].as_str()) } else { None };
+            
+            match manager.export_config(target_path) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("{}Error exporting config:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    std::process::exit(1);
+                }
+            }
         }
         
         "--add" => {
@@ -1122,5 +1356,248 @@ mod tests {
         let path = path_result.unwrap();
         assert!(path.to_string_lossy().contains(".alias-mgr"));
         assert!(path.to_string_lossy().ends_with("config.json"));
+    }
+
+    #[test]
+    fn test_substitute_parameters_positional() {
+        let args = vec!["v1.0.0".to_string(), "main".to_string(), "feature".to_string()];
+        
+        // Test basic positional parameters
+        assert_eq!(AliasManager::substitute_parameters("git tag $1", &args), "git tag v1.0.0");
+        assert_eq!(AliasManager::substitute_parameters("git checkout $2", &args), "git checkout main");
+        assert_eq!(AliasManager::substitute_parameters("git merge $2 $3", &args), "git merge main feature");
+        
+        // Test out of bounds (should substitute with empty string)
+        assert_eq!(AliasManager::substitute_parameters("git tag $5", &args), "git tag ");
+        
+        // Test $0 (should substitute with empty string - 1-indexed)
+        assert_eq!(AliasManager::substitute_parameters("git tag $0", &args), "git tag ");
+    }
+
+    #[test]
+    fn test_substitute_parameters_all_args() {
+        let args = vec!["file1.txt".to_string(), "file2.txt".to_string(), "file3.txt".to_string()];
+        
+        // Test $@ (all arguments)
+        assert_eq!(AliasManager::substitute_parameters("echo $@", &args), "echo file1.txt file2.txt file3.txt");
+        
+        // Test $* (all arguments - same as $@ in our implementation)
+        assert_eq!(AliasManager::substitute_parameters("echo $*", &args), "echo file1.txt file2.txt file3.txt");
+        
+        // Test empty args
+        let empty_args: Vec<String> = vec![];
+        assert_eq!(AliasManager::substitute_parameters("echo $@", &empty_args), "echo ");
+        assert_eq!(AliasManager::substitute_parameters("echo $*", &empty_args), "echo ");
+    }
+
+    #[test]
+    fn test_substitute_parameters_escapes() {
+        let args = vec!["value".to_string()];
+        
+        // Test literal dollar sign
+        assert_eq!(AliasManager::substitute_parameters("echo $$", &args), "echo $");
+        assert_eq!(AliasManager::substitute_parameters("echo $$ $1", &args), "echo $ value");
+        
+        // Test $ at end of string
+        assert_eq!(AliasManager::substitute_parameters("echo $", &args), "echo $");
+        
+        // Test $ followed by non-special character
+        assert_eq!(AliasManager::substitute_parameters("echo $x", &args), "echo $x");
+        assert_eq!(AliasManager::substitute_parameters("echo $hello", &args), "echo $hello");
+    }
+
+    #[test]
+    fn test_substitute_parameters_complex() {
+        let args = vec!["v1.0.0".to_string(), "origin".to_string()];
+        
+        // Test complex real-world example
+        let command = "git tag $1 && git push $2 $1";
+        let expected = "git tag v1.0.0 && git push origin v1.0.0";
+        assert_eq!(AliasManager::substitute_parameters(command, &args), expected);
+        
+        // Test mixed variables and literals
+        let command = "echo 'Version: $1, Remote: $2, Cost: $$5'";
+        let expected = "echo 'Version: v1.0.0, Remote: origin, Cost: $5'";
+        assert_eq!(AliasManager::substitute_parameters(command, &args), expected);
+    }
+
+    #[test]
+    fn test_substitute_parameters_edge_cases() {
+        let args = vec!["test".to_string()];
+        
+        // Test multiple consecutive variables
+        assert_eq!(AliasManager::substitute_parameters("$1$1$1", &args), "testtesttest");
+        
+        // Test variables at start and end
+        assert_eq!(AliasManager::substitute_parameters("$1 middle $1", &args), "test middle test");
+        
+        // Test only variables
+        assert_eq!(AliasManager::substitute_parameters("$1", &args), "test");
+        assert_eq!(AliasManager::substitute_parameters("$@", &args), "test");
+        
+        // Test no variables
+        assert_eq!(AliasManager::substitute_parameters("echo hello", &args), "echo hello");
+    }
+
+    #[test]
+    fn test_has_parameter_variables() {
+        // Test positional parameters
+        assert!(AliasManager::has_parameter_variables("git tag $1"));
+        assert!(AliasManager::has_parameter_variables("git push $2 $1"));
+        assert!(AliasManager::has_parameter_variables("echo $9"));
+        
+        // Test special parameters
+        assert!(AliasManager::has_parameter_variables("echo $@"));
+        assert!(AliasManager::has_parameter_variables("echo $*"));
+        
+        // Test mixed content
+        assert!(AliasManager::has_parameter_variables("git tag $1 && git push origin $1"));
+        
+        // Test no variables
+        assert!(!AliasManager::has_parameter_variables("git status"));
+        assert!(!AliasManager::has_parameter_variables("echo hello world"));
+        
+        // Test escaped dollar signs (should not count as variables)
+        assert!(!AliasManager::has_parameter_variables("echo $$"));
+        assert!(!AliasManager::has_parameter_variables("echo $$ literal"));
+        
+        // Test dollar followed by non-special chars
+        assert!(!AliasManager::has_parameter_variables("echo $hello"));
+        assert!(!AliasManager::has_parameter_variables("echo $abc"));
+        
+        // Test dollar at end
+        assert!(!AliasManager::has_parameter_variables("echo $"));
+    }
+
+    #[test]
+    fn test_parameter_substitution_integration() {
+        let mut config = Config::new();
+        
+        // Test that command with variables is stored correctly
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand { command: "git tag $1".to_string(), operator: None },
+                ChainCommand { command: "git push origin $1".to_string(), operator: Some(ChainOperator::And) },
+            ],
+            parallel: false,
+        };
+        
+        config.add_alias("tag-push".to_string(), CommandType::Chain(chain), Some("Tag and push".to_string()), false).unwrap();
+        
+        let entry = config.get_alias("tag-push").unwrap();
+        let display = entry.command_display();
+        assert!(display.contains("git tag $1"));
+        assert!(display.contains("git push origin $1"));
+    }
+
+    #[test]
+    fn test_export_config_to_current_dir() {
+        let (mut manager, temp_dir) = create_test_manager();
+        
+        // Add some aliases to export
+        manager.add_alias("test1".to_string(), CommandType::Simple("echo test1".to_string()), None, false).unwrap();
+        manager.add_alias("test2".to_string(), CommandType::Simple("echo test2".to_string()), Some("Test 2".to_string()), false).unwrap();
+        
+        // Create a target directory within the temp directory
+        let target_dir = temp_dir.path().join("export_test");
+        fs::create_dir_all(&target_dir).unwrap();
+        
+        // Change to the target directory (simulate current directory)
+        env::set_current_dir(&target_dir).unwrap();
+        
+        // Export config (should go to current directory)
+        let result = manager.export_config(None);
+        assert!(result.is_ok());
+        
+        // Verify the exported file exists and has correct content
+        let exported_file = target_dir.join("config.json");
+        assert!(exported_file.exists());
+        
+        // Load the exported config and verify it matches
+        let exported_content = fs::read_to_string(&exported_file).unwrap();
+        let exported_config: Config = serde_json::from_str(&exported_content).unwrap();
+        
+        assert_eq!(exported_config.aliases.len(), 2);
+        assert!(exported_config.get_alias("test1").is_some());
+        assert!(exported_config.get_alias("test2").is_some());
+    }
+
+    #[test]
+    fn test_export_config_to_specified_dir() {
+        let (mut manager, temp_dir) = create_test_manager();
+        
+        // Add an alias to export
+        manager.add_alias("test".to_string(), CommandType::Simple("echo test".to_string()), None, false).unwrap();
+        
+        // Create a target directory
+        let target_dir = temp_dir.path().join("specified_target");
+        
+        // Export config to specified directory
+        let result = manager.export_config(Some(target_dir.to_str().unwrap()));
+        assert!(result.is_ok());
+        
+        // Verify the exported file exists
+        let exported_file = target_dir.join("config.json");
+        assert!(exported_file.exists());
+        
+        // Verify content
+        let exported_content = fs::read_to_string(&exported_file).unwrap();
+        let exported_config: Config = serde_json::from_str(&exported_content).unwrap();
+        assert_eq!(exported_config.aliases.len(), 1);
+    }
+
+    #[test]
+    fn test_export_config_creates_directory() {
+        let (mut manager, temp_dir) = create_test_manager();
+        
+        // Add an alias to export
+        manager.add_alias("test".to_string(), CommandType::Simple("echo test".to_string()), None, false).unwrap();
+        
+        // Specify non-existent target directory
+        let target_dir = temp_dir.path().join("non_existent").join("nested").join("dir");
+        
+        // Export should create the directory structure
+        let result = manager.export_config(Some(target_dir.to_str().unwrap()));
+        assert!(result.is_ok());
+        
+        // Verify directory was created and file exists
+        assert!(target_dir.exists());
+        assert!(target_dir.is_dir());
+        assert!(target_dir.join("config.json").exists());
+    }
+
+    #[test]
+    fn test_export_config_no_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("nonexistent_config.json");
+        
+        let manager = AliasManager {
+            config: Config::new(),
+            config_path,
+        };
+        
+        let target_dir = temp_dir.path().join("target");
+        let result = manager.export_config(Some(target_dir.to_str().unwrap()));
+        
+        // Should fail because source config doesn't exist
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Source config file does not exist"));
+    }
+
+    #[test]
+    fn test_export_config_target_is_file() {
+        let (mut manager, temp_dir) = create_test_manager();
+        
+        // Add an alias to export
+        manager.add_alias("test".to_string(), CommandType::Simple("echo test".to_string()), None, false).unwrap();
+        
+        // Create a file at the target path (not a directory)
+        let target_file = temp_dir.path().join("existing_file.txt");
+        fs::write(&target_file, "existing content").unwrap();
+        
+        // Export should fail because target exists and is not a directory
+        let result = manager.export_config(Some(target_file.to_str().unwrap()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exists but is not a directory"));
     }
 }

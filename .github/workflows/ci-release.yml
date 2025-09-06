@@ -1,0 +1,86 @@
+name: CI and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: Build and Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy lints
+        run: cargo clippy -- -D warnings
+
+      - name: Test
+        run: cargo test --all --locked
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Package artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/release/a"
+          out="a-${{ runner.os }}-x86_64.zip"
+          # Strip binary if available (optional)
+          strip "$bin" || true
+          zip -j "$out" "$bin"
+
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = 'target\release\a.exe'
+          $out = "a-${{ runner.os }}-x86_64.zip"
+          if (!(Test-Path $bin)) { throw "Binary not found: $bin" }
+          Compress-Archive -Path $bin -DestinationPath $out -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-${{ runner.os }}-x86_64
+          path: a-${{ runner.os }}-x86_64.zip
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          draft: false
+          prerelease: false
+
