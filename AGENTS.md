@@ -35,3 +35,4 @@
 ## Security & Configuration Tips
 - Do not commit secrets. Treat alias commands as untrusted input; this tool executes commands without shell interpolation—preserve that property.
 - Keep paths portable (Windows/Linux/macOS). Avoid hardcoded absolute paths in code and tests.
+ - Enable local hooks to enforce formatting/lints: `git config core.hooksPath .githooks`
