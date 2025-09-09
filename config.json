@@ -1,40 +1,5 @@
 {
   "aliases": {
-    "ls": {
-      "command_type": {
-        "Simple": "ls -la"
-      },
-      "description": "List files with details",
-      "created": "2025-06-23"
-    },
-    "mdi": {
-      "command_type": {
-        "Simple": "mdcode info ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "mddr": {
-      "command_type": {
-        "Simple": "mdcode diff . 0 1"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "cbt": {
-      "command_type": {
-        "Simple": "cargo test"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "mdf": {
-      "command_type": {
-        "Simple": "mdcode gh_fetch ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
     "tagp": {
       "command_type": {
         "Chain": {
@@ -54,12 +19,35 @@
       "description": null,
       "created": "2025-09-04"
     },
-    "mdp": {
+    "mdf": {
       "command_type": {
-        "Simple": "mdcode gh_push ."
+        "Simple": "mdcode gh_fetch ."
       },
       "description": null,
       "created": "2025-06-23"
+    },
+    "cdxu": {
+      "command_type": {
+        "Chain": {
+          "commands": [
+            {
+              "command": "codex --version",
+              "operator": null
+            },
+            {
+              "command": "npm install -g @openai/codex@latest",
+              "operator": "Or"
+            },
+            {
+              "command": "codex --version",
+              "operator": "Or"
+            }
+          ],
+          "parallel": false
+        }
+      },
+      "description": null,
+      "created": "2025-09-06"
     },
     "cbr": {
       "command_type": {
@@ -68,11 +56,18 @@
       "description": null,
       "created": "2025-06-23"
     },
-    "dir": {
+    "mdi": {
       "command_type": {
-        "Simple": "dir /b"
+        "Simple": "mdcode info ."
       },
       "description": null,
+      "created": "2025-06-23"
+    },
+    "ls": {
+      "command_type": {
+        "Simple": "ls -la"
+      },
+      "description": "List files with details",
       "created": "2025-06-23"
     },
     "mytest": {
@@ -82,30 +77,23 @@
       "description": "Test command",
       "created": "2025-06-23"
     },
-    "al": {
-      "command_type": {
-        "Simple": "a --list"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "mdd": {
-      "command_type": {
-        "Simple": "mdcode diff ."
-      },
-      "description": null,
-      "created": "2025-09-01"
-    },
-    "mddl": {
-      "command_type": {
-        "Simple": "mdcode diff . L"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
     "mds": {
       "command_type": {
         "Simple": "mdcode gh_sync ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "cbt": {
+      "command_type": {
+        "Simple": "cargo test"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mdu": {
+      "command_type": {
+        "Simple": "mdcode update ."
       },
       "description": null,
       "created": "2025-06-23"
@@ -117,6 +105,34 @@
       "description": null,
       "created": "2025-06-23"
     },
+    "mdd": {
+      "command_type": {
+        "Simple": "mdcode diff ."
+      },
+      "description": null,
+      "created": "2025-09-01"
+    },
+    "mdp": {
+      "command_type": {
+        "Simple": "mdcode gh_push ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mdt": {
+      "command_type": {
+        "Simple": "mdcode tag ."
+      },
+      "description": null,
+      "created": "2025-09-07"
+    },
+    "mddl": {
+      "command_type": {
+        "Simple": "mdcode diff . L"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
     "kl": {
       "command_type": {
         "Simple": "mdkloc"
@@ -124,9 +140,23 @@
       "description": null,
       "created": "2025-08-25"
     },
-    "mdu": {
+    "al": {
       "command_type": {
-        "Simple": "mdcode update ."
+        "Simple": "a --list"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mddr": {
+      "command_type": {
+        "Simple": "mdcode diff . 0 1"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "dir": {
+      "command_type": {
+        "Simple": "dir /b"
       },
       "description": null,
       "created": "2025-06-23"
