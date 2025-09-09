@@ -1,11 +1,17 @@
+use base64::Engine;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
-const VERSION: &str = "1.2.0";
+const VERSION: &str = "1.3.0";
+// Hardcoded GitHub target for config sync
+const GITHUB_REPO: &str = "0x4d44/a"; // owner/repo
+const GITHUB_BRANCH: &str = "main";
+const GITHUB_CONFIG_PATH: &str = "config.json";
 
 // ANSI color codes
 const COLOR_RESET: &str = "\x1b[0m";
@@ -242,6 +248,178 @@ impl AliasManager {
 
         fs::write(&self.config_path, content)
             .map_err(|e| format!("Failed to save config file: {}", e))
+    }
+
+    fn github_token() -> Option<String> {
+        env::var("A_GITHUB_TOKEN")
+            .ok()
+            .or_else(|| env::var("GITHUB_TOKEN").ok())
+            .or_else(|| env::var("GH_TOKEN").ok())
+    }
+
+    fn push_config_to_github(&self, message: Option<&str>) -> Result<(), String> {
+        let repo = GITHUB_REPO;
+        let branch = GITHUB_BRANCH;
+        let path_in_repo = GITHUB_CONFIG_PATH;
+        let commit_message = message.unwrap_or("chore(config): update alias config");
+
+        let token = Self::github_token().ok_or_else(|| {
+            "Missing GitHub token. Set A_GITHUB_TOKEN or GITHUB_TOKEN.".to_string()
+        })?;
+
+        if !self.config_path.exists() {
+            return Err(
+                "Source config file does not exist. Create some aliases first.".to_string(),
+            );
+        }
+
+        let content_bytes = fs::read(&self.config_path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        let content_b64 = base64::engine::general_purpose::STANDARD.encode(content_bytes);
+
+        let api_base = format!(
+            "https://api.github.com/repos/{}/contents/{}",
+            repo, path_in_repo
+        );
+        let get_url = format!("{}?ref={}", api_base, branch);
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(20))
+            .build();
+
+        let mut maybe_sha: Option<String> = None;
+        let get_req = agent
+            .get(&get_url)
+            .set("User-Agent", "a-alias-manager")
+            .set("Authorization", &format!("Bearer {}", token));
+
+        match get_req.call() {
+            Ok(resp) => {
+                if resp.status() == 200 {
+                    if let Ok(val) = resp.into_json::<serde_json::Value>() {
+                        if let Some(sha) = val.get("sha").and_then(|v| v.as_str()) {
+                            maybe_sha = Some(sha.to_string());
+                        }
+                    }
+                }
+            }
+            Err(ureq::Error::Status(404, _)) => {}
+            Err(e) => {
+                return Err(format!("Failed to query existing file: {}", e));
+            }
+        }
+
+        let mut body = serde_json::json!({
+            "message": commit_message,
+            "content": content_b64,
+            "branch": branch,
+        });
+        if let Some(sha) = maybe_sha {
+            body["sha"] = serde_json::Value::String(sha);
+        }
+
+        let put_req = agent
+            .put(&api_base)
+            .set("User-Agent", "a-alias-manager")
+            .set("Authorization", &format!("Bearer {}", token))
+            .send_json(body);
+
+        match put_req {
+            Ok(resp) => {
+                if resp.status() == 200 || resp.status() == 201 {
+                    println!(
+                        "{}Config pushed to GitHub:{} https://github.com/{}/blob/{}/{}",
+                        COLOR_GREEN, COLOR_RESET, repo, branch, path_in_repo
+                    );
+                    Ok(())
+                } else {
+                    Err(format!("GitHub API returned status {}", resp.status()))
+                }
+            }
+            Err(e) => Err(format!("Failed to push to GitHub: {}", e)),
+        }
+    }
+
+    fn pull_config_from_github(&mut self) -> Result<(), String> {
+        let repo = GITHUB_REPO;
+        let branch = GITHUB_BRANCH;
+        let path_in_repo = GITHUB_CONFIG_PATH;
+
+        let token_opt = Self::github_token();
+
+        let api_url = format!(
+            "https://api.github.com/repos/{}/contents/{}?ref={}",
+            repo, path_in_repo, branch
+        );
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(20))
+            .build();
+        let mut req = agent.get(&api_url).set("User-Agent", "a-alias-manager");
+        if let Some(token) = &token_opt {
+            req = req.set("Authorization", &format!("Bearer {}", token));
+        }
+
+        let resp = req
+            .call()
+            .map_err(|e| format!("Failed to fetch config: {}", e))?;
+        if resp.status() != 200 {
+            return Err(format!("GitHub API returned status {}", resp.status()));
+        }
+
+        let val: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+
+        let encoding = val
+            .get("encoding")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing encoding in GitHub response".to_string())?;
+        if encoding != "base64" {
+            return Err("Unsupported encoding from GitHub".to_string());
+        }
+        let content_b64 = val
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing content in GitHub response".to_string())?;
+
+        let content_clean = content_b64.replace('\n', "");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(content_clean)
+            .map_err(|e| format!("Failed to decode content: {}", e))?;
+        let text = String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8 content: {}", e))?;
+
+        let parsed: Config = serde_json::from_str(&text)
+            .map_err(|e| format!("Downloaded config is invalid JSON: {}", e))?;
+
+        if self.config_path.exists() {
+            let mut backup_path = self.config_path.clone();
+            backup_path.set_file_name("config.backup.json");
+            fs::copy(&self.config_path, &backup_path)
+                .map_err(|e| format!("Failed to create backup: {}", e))?;
+            println!(
+                "{}Existing config backed up to:{} {}",
+                COLOR_GRAY,
+                COLOR_RESET,
+                backup_path.display()
+            );
+        }
+
+        fs::write(&self.config_path, text)
+            .map_err(|e| format!("Failed to write config file: {}", e))?;
+        self.config = parsed;
+
+        println!(
+            "{}Config pulled from GitHub:{} https://github.com/{}/blob/{}/{}",
+            COLOR_GREEN, COLOR_RESET, repo, branch, path_in_repo
+        );
+        println!(
+            "{}File contains {} aliases{}",
+            COLOR_GRAY,
+            self.config.aliases.len(),
+            COLOR_RESET
+        );
+
+        Ok(())
     }
 
     fn add_alias(
@@ -1058,6 +1236,14 @@ fn print_help() {
         COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
     );
     println!(
+        "  {}a{} {}--push{}                     Push config to GitHub (repo fixed)",
+        COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
+    );
+    println!(
+        "  {}a{} {}--pull{}                     Pull config from GitHub (repo fixed)",
+        COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
+    );
+    println!(
         "  {}a{} {}--version{}                  Show version information",
         COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
     );
@@ -1346,6 +1532,53 @@ fn main() {
                         "{}Error exporting config:{} {}",
                         COLOR_YELLOW, COLOR_RESET, e
                     );
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        "--push" => {
+            // Optional: allow custom commit message only
+            let mut message: Option<String> = None;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--message" if i + 1 < args.len() => {
+                        message = Some(args[i + 1].clone());
+                        i += 2;
+                    }
+                    _ => {
+                        eprintln!(
+                            "{}Unknown or unsupported option for --push:{} {}",
+                            COLOR_YELLOW, COLOR_RESET, args[i]
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            match manager.push_config_to_github(message.as_deref()) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("{}Error pushing config:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        "--pull" => {
+            if args.len() > 2 {
+                eprintln!(
+                    "{}--pull does not accept options; repo is fixed.{}",
+                    COLOR_YELLOW, COLOR_RESET
+                );
+                std::process::exit(1);
+            }
+
+            match manager.pull_config_from_github() {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("{}Error pulling config:{} {}", COLOR_YELLOW, COLOR_RESET, e);
                     std::process::exit(1);
                 }
             }

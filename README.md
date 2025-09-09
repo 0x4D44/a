@@ -1,4 +1,4 @@
-# Alias Manager (`a`) v1.1.0
+# Alias Manager (`a`) v1.3.0
 
 A cross-platform command alias management tool written in Rust. Provides a simple way to create, manage, and execute command aliases that work on both Windows and Linux.
 
@@ -18,6 +18,7 @@ A cross-platform command alias management tool written in Rust. Provides a simpl
 - **Progress feedback**: Clear visibility into execution progress and command flow
 - **Backward compatibility**: Seamless migration from older versions
 - **Cross-platform security**: No shell dependency eliminates injection vulnerabilities
+- **GitHub sync**: Push and pull config.json with a single command
 
 ## Command Chaining
 
@@ -213,6 +214,13 @@ a --config
 
 # Show version
 a --version
+
+# Export local config to current directory
+a --export
+
+# Push/pull config with GitHub
+a --push                       # requires A_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN
+a --pull                       # pulls latest (backs up existing)
 ```
 
 ## Configuration
@@ -222,6 +230,25 @@ Aliases are stored in:
 - **Linux/macOS**: `~/.alias-mgr/config.json`
 
 The configuration file is automatically created and updated when you add/remove aliases.
+
+### Sync With GitHub
+
+Repo information is hardcoded:
+- Repo: `0x4d44/a`
+- Branch: `main`
+- Path: `config.json`
+
+Requirements:
+- Set an environment variable `A_GITHUB_TOKEN` (or `GITHUB_TOKEN`/`GH_TOKEN`) with repo access.
+
+Usage:
+```bash
+# Push local config (~/.alias-mgr/config.json) to GitHub root as config.json
+a --push                       # optional: --message "update aliases"
+
+# Pull latest config from GitHub and overwrite local one (backs up to config.backup.json)
+a --pull
+```
 
 ### Example Configuration
 
@@ -302,6 +329,12 @@ The tool uses a dispatcher pattern where:
 This design eliminates conflicts between management commands and user aliases while providing a clean, intuitive interface with enhanced visual feedback.
 
 ## Version History
+
+- **v1.3.0**:
+  - Add `--push` and `--pull` to sync config with GitHub via API
+  - Defaults to repo `0x4d44/a`, branch `main`, path `config.json`
+  - Uses `A_GITHUB_TOKEN`/`GITHUB_TOKEN`/`GH_TOKEN` for authentication (push requires token)
+  - Safe pull: creates `config.backup.json` before overwriting
 
 - **v1.1.0**:
   - **Enhanced Help System**: Interactive help with optional examples
