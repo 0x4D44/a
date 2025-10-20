@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-const VERSION: &str = "1.3.0";
+const VERSION: &str = "1.4.0";
 // Hardcoded GitHub target for config sync
 const GITHUB_REPO: &str = "0x4d44/a"; // owner/repo
 const GITHUB_BRANCH: &str = "main";
@@ -251,10 +251,134 @@ impl AliasManager {
     }
 
     fn github_token() -> Option<String> {
-        env::var("A_GITHUB_TOKEN")
-            .ok()
-            .or_else(|| env::var("GITHUB_TOKEN").ok())
-            .or_else(|| env::var("GH_TOKEN").ok())
+        // 1) Environment variables
+        if let Ok(tok) = env::var("A_GITHUB_TOKEN") {
+            if !tok.trim().is_empty() {
+                return Some(tok);
+            }
+        }
+        if let Ok(tok) = env::var("GITHUB_TOKEN") {
+            if !tok.trim().is_empty() {
+                return Some(tok);
+            }
+        }
+        if let Ok(tok) = env::var("GH_TOKEN") {
+            if !tok.trim().is_empty() {
+                return Some(tok);
+            }
+        }
+
+        // 2) GitHub CLI (gh) – try status first (non-interactive), then token
+        if let Some(tok) = Self::github_token_from_gh_status() {
+            return Some(tok);
+        }
+        if let Some(tok) = Self::github_token_from_gh_token() {
+            return Some(tok);
+        }
+
+        // 3) Git credential helper (may have PAT stored as the password)
+        if let Some(tok) = Self::github_token_from_git_credentials("github.com") {
+            return Some(tok);
+        }
+        if let Some(tok) = Self::github_token_from_git_credentials("api.github.com") {
+            return Some(tok);
+        }
+
+        None
+    }
+
+    fn github_token_from_gh_status() -> Option<String> {
+        let mut cmd = Command::new("gh");
+        cmd.arg("auth")
+            .arg("status")
+            .arg("--show-token")
+            .env("GH_PROMPT_DISABLED", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        let output = match cmd.output() {
+            Ok(o) => o,
+            Err(_) => return None,
+        };
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Look for a line like: "Token: ghp_..."
+        for line in stdout.lines() {
+            if let Some(idx) = line.find("Token:") {
+                let token_part = line[idx + "Token:".len()..].trim();
+                if !token_part.is_empty() && token_part != "<TOKEN>" {
+                    return Some(token_part.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn github_token_from_gh_token() -> Option<String> {
+        let mut cmd = Command::new("gh");
+        cmd.arg("auth")
+            .arg("token")
+            .env("GH_PROMPT_DISABLED", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let output = match cmd.output() {
+            Ok(o) => o,
+            Err(_) => return None,
+        };
+        if !output.status.success() {
+            return None;
+        }
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            None
+        } else {
+            Some(token)
+        }
+    }
+
+    fn github_token_from_git_credentials(host: &str) -> Option<String> {
+        let mut cmd = Command::new("git");
+        cmd.arg("credential")
+            .arg("fill")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            // Standard input format for git credential helper
+            let _ = write!(stdin, "protocol=https\nhost={}\n\n", host);
+        }
+
+        let output = match child.wait_with_output() {
+            Ok(o) => o,
+            Err(_) => return None,
+        };
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Parse key=value lines; prefer password as token
+        let mut password: Option<String> = None;
+        for line in stdout.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                if k == "password" && !v.trim().is_empty() {
+                    password = Some(v.trim().to_string());
+                    break;
+                }
+            }
+        }
+        password
     }
 
     fn push_config_to_github(&self, message: Option<&str>) -> Result<(), String> {
@@ -264,7 +388,7 @@ impl AliasManager {
         let commit_message = message.unwrap_or("chore(config): update alias config");
 
         let token = Self::github_token().ok_or_else(|| {
-            "Missing GitHub token. Set A_GITHUB_TOKEN or GITHUB_TOKEN.".to_string()
+            "Missing GitHub token. Set A_GITHUB_TOKEN/GITHUB_TOKEN/GH_TOKEN or login via gh/git.".to_string()
         })?;
 
         if !self.config_path.exists() {

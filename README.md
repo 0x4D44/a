@@ -1,4 +1,4 @@
-# Alias Manager (`a`) v1.3.0
+# Alias Manager (`a`) v1.4.0
 
 A cross-platform command alias management tool written in Rust. Provides a simple way to create, manage, and execute command aliases that work on both Windows and Linux.
 
@@ -219,7 +219,7 @@ a --version
 a --export
 
 # Push/pull config with GitHub
-a --push                       # requires A_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN
+a --push                       # uses env/gh/git creds (see below)
 a --pull                       # pulls latest (backs up existing)
 ```
 
@@ -238,8 +238,14 @@ Repo information is hardcoded:
 - Branch: `main`
 - Path: `config.json`
 
-Requirements:
-- Set an environment variable `A_GITHUB_TOKEN` (or `GITHUB_TOKEN`/`GH_TOKEN`) with repo access.
+Auth sources (checked in order):
+- Environment: `A_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
+- GitHub CLI: `gh auth status --show-token` or `gh auth token` (non-interactive)
+- Git credential helper: token stored for `https://github.com` (used as password)
+
+Notes:
+- For `gh`, ensure you are logged in (`gh auth login`).
+- For git credentials, ensure your PAT is saved by your git credential manager for GitHub.
 
 Usage:
 ```bash
@@ -329,6 +335,10 @@ The tool uses a dispatcher pattern where:
 This design eliminates conflicts between management commands and user aliases while providing a clean, intuitive interface with enhanced visual feedback.
 
 ## Version History
+
+- **v1.4.0**:
+  - Enhance GitHub auth: support gh CLI and git credential helper in addition to env vars
+  - Improved error message guidance for `a --push`
 
 - **v1.3.0**:
   - Add `--push` and `--pull` to sync config with GitHub via API
