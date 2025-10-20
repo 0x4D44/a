@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 const VERSION: &str = "1.4.0";
@@ -53,6 +54,156 @@ struct AliasEntry {
     command_type: CommandType,
     description: Option<String>,
     created: String,
+}
+
+trait CommandRunner: Send + Sync {
+    fn run(&self, program: &str, args: &[String]) -> Result<i32, String>;
+}
+
+#[derive(Default)]
+struct SystemCommandRunner;
+
+impl CommandRunner for SystemCommandRunner {
+    fn run(&self, program: &str, args: &[String]) -> Result<i32, String> {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        let status = cmd
+            .status()
+            .map_err(|e| format!("Failed to execute command '{}': {}", program, e))?;
+
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GitHubResponse {
+    status: u16,
+    body: Option<String>,
+    json: Option<serde_json::Value>,
+}
+
+impl GitHubResponse {
+    #[cfg(test)]
+    fn from_status(status: u16) -> Self {
+        Self {
+            status,
+            body: None,
+            json: None,
+        }
+    }
+
+    fn from_text(status: u16, text: String) -> Self {
+        let json = serde_json::from_str(&text).ok();
+        Self {
+            status,
+            body: Some(text),
+            json,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_json(status: u16, json: serde_json::Value) -> Self {
+        Self {
+            status,
+            body: None,
+            json: Some(json),
+        }
+    }
+
+    fn status(&self) -> u16 {
+        self.status
+    }
+
+    fn json(&self) -> Option<&serde_json::Value> {
+        self.json.as_ref()
+    }
+
+    fn body(&self) -> Option<&str> {
+        self.body.as_deref()
+    }
+}
+
+trait GitHubClient: Send + Sync {
+    fn get(&self, url: &str, headers: &[(&str, String)]) -> Result<GitHubResponse, String>;
+    fn put(
+        &self,
+        url: &str,
+        headers: &[(&str, String)],
+        body: serde_json::Value,
+    ) -> Result<GitHubResponse, String>;
+}
+
+#[derive(Clone)]
+struct UreqGitHubClient {
+    agent: ureq::Agent,
+}
+
+impl Default for UreqGitHubClient {
+    fn default() -> Self {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(20))
+            .build();
+        Self { agent }
+    }
+}
+
+impl UreqGitHubClient {
+    #[cfg(test)]
+    fn with_agent(agent: ureq::Agent) -> Self {
+        Self { agent }
+    }
+}
+
+impl GitHubClient for UreqGitHubClient {
+    fn get(&self, url: &str, headers: &[(&str, String)]) -> Result<GitHubResponse, String> {
+        let mut request = self.agent.get(url);
+        for (key, value) in headers {
+            request = request.set(key, value);
+        }
+
+        match request.call() {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.into_string().unwrap_or_default();
+                Ok(GitHubResponse::from_text(status, text))
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let text = resp.into_string().unwrap_or_default();
+                Ok(GitHubResponse::from_text(status as u16, text))
+            }
+            Err(e) => Err(format!("Failed to perform GitHub GET: {}", e)),
+        }
+    }
+
+    fn put(
+        &self,
+        url: &str,
+        headers: &[(&str, String)],
+        body: serde_json::Value,
+    ) -> Result<GitHubResponse, String> {
+        let mut request = self.agent.put(url);
+        for (key, value) in headers {
+            request = request.set(key, value);
+        }
+
+        match request.send_json(body) {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.into_string().unwrap_or_default();
+                Ok(GitHubResponse::from_text(status, text))
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let text = resp.into_string().unwrap_or_default();
+                Ok(GitHubResponse::from_text(status as u16, text))
+            }
+            Err(e) => Err(format!("Failed to perform GitHub PUT: {}", e)),
+        }
+    }
 }
 
 impl AliasEntry {
@@ -153,6 +304,8 @@ impl Config {
 struct AliasManager {
     config: Config,
     config_path: PathBuf,
+    command_runner: Arc<dyn CommandRunner + Send + Sync>,
+    github_client: Arc<dyn GitHubClient + Send + Sync>,
 }
 
 impl AliasManager {
@@ -160,10 +313,24 @@ impl AliasManager {
         let config_path = Self::get_config_path()?;
         let config = Self::load_config(&config_path)?;
 
-        Ok(AliasManager {
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(UreqGitHubClient::default());
+
+        Ok(Self::with_dependencies(config, config_path, runner, github))
+    }
+
+    fn with_dependencies(
+        config: Config,
+        config_path: PathBuf,
+        command_runner: Arc<dyn CommandRunner + Send + Sync>,
+        github_client: Arc<dyn GitHubClient + Send + Sync>,
+    ) -> Self {
+        AliasManager {
             config,
             config_path,
-        })
+            command_runner,
+            github_client,
+        }
     }
 
     fn get_config_path() -> Result<PathBuf, String> {
@@ -407,29 +574,24 @@ impl AliasManager {
         );
         let get_url = format!("{}?ref={}", api_base, branch);
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(20))
-            .build();
+        let headers = vec![
+            ("User-Agent", "a-alias-manager".to_string()),
+            ("Authorization", format!("Bearer {}", token)),
+        ];
 
         let mut maybe_sha: Option<String> = None;
-        let get_req = agent
-            .get(&get_url)
-            .set("User-Agent", "a-alias-manager")
-            .set("Authorization", &format!("Bearer {}", token));
-
-        match get_req.call() {
-            Ok(resp) => {
-                if resp.status() == 200 {
-                    if let Ok(val) = resp.into_json::<serde_json::Value>() {
-                        if let Some(sha) = val.get("sha").and_then(|v| v.as_str()) {
-                            maybe_sha = Some(sha.to_string());
-                        }
+        let get_response = self.github_client.get(&get_url, &headers)?;
+        match get_response.status() {
+            200 => {
+                if let Some(json) = get_response.json() {
+                    if let Some(sha) = json.get("sha").and_then(|v| v.as_str()) {
+                        maybe_sha = Some(sha.to_string());
                     }
                 }
             }
-            Err(ureq::Error::Status(404, _)) => {}
-            Err(e) => {
-                return Err(format!("Failed to query existing file: {}", e));
+            404 => {}
+            status => {
+                return Err(format!("Failed to query existing file: status {}", status));
             }
         }
 
@@ -442,25 +604,19 @@ impl AliasManager {
             body["sha"] = serde_json::Value::String(sha);
         }
 
-        let put_req = agent
-            .put(&api_base)
-            .set("User-Agent", "a-alias-manager")
-            .set("Authorization", &format!("Bearer {}", token))
-            .send_json(body);
+        let put_response = self.github_client.put(&api_base, &headers, body)?;
 
-        match put_req {
-            Ok(resp) => {
-                if resp.status() == 200 || resp.status() == 201 {
-                    println!(
-                        "{}Config pushed to GitHub:{} https://github.com/{}/blob/{}/{}",
-                        COLOR_GREEN, COLOR_RESET, repo, branch, path_in_repo
-                    );
-                    Ok(())
-                } else {
-                    Err(format!("GitHub API returned status {}", resp.status()))
-                }
-            }
-            Err(e) => Err(format!("Failed to push to GitHub: {}", e)),
+        if put_response.status() == 200 || put_response.status() == 201 {
+            println!(
+                "{}Config pushed to GitHub:{} https://github.com/{}/blob/{}/{}",
+                COLOR_GREEN, COLOR_RESET, repo, branch, path_in_repo
+            );
+            Ok(())
+        } else {
+            Err(format!(
+                "GitHub API returned status {}",
+                put_response.status()
+            ))
         }
     }
 
@@ -475,24 +631,25 @@ impl AliasManager {
             "https://api.github.com/repos/{}/contents/{}?ref={}",
             repo, path_in_repo, branch
         );
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(20))
-            .build();
-        let mut req = agent.get(&api_url).set("User-Agent", "a-alias-manager");
+        let mut headers = vec![("User-Agent", "a-alias-manager".to_string())];
         if let Some(token) = &token_opt {
-            req = req.set("Authorization", &format!("Bearer {}", token));
+            headers.push(("Authorization", format!("Bearer {}", token)));
         }
 
-        let resp = req
-            .call()
-            .map_err(|e| format!("Failed to fetch config: {}", e))?;
-        if resp.status() != 200 {
-            return Err(format!("GitHub API returned status {}", resp.status()));
+        let response = self.github_client.get(&api_url, &headers)?;
+        if response.status() != 200 {
+            return Err(format!("GitHub API returned status {}", response.status()));
         }
 
-        let val: serde_json::Value = resp
-            .into_json()
-            .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+        let val = response
+            .json()
+            .cloned()
+            .or_else(|| {
+                response
+                    .body()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            })
+            .ok_or_else(|| "Failed to parse GitHub response".to_string())?;
 
         let encoding = val
             .get("encoding")
@@ -614,13 +771,25 @@ impl AliasManager {
     }
 
     fn confirm_overwrite() -> Result<bool, String> {
-        print!("{}Overwrite? (y/N):{} ", COLOR_YELLOW, COLOR_RESET);
-        io::stdout()
+        let stdin = io::stdin();
+        let mut stdout = io::stdout();
+        let mut reader = stdin.lock();
+        Self::confirm_overwrite_with_reader(&mut reader, &mut stdout)
+    }
+
+    fn confirm_overwrite_with_reader<R, W>(reader: &mut R, writer: &mut W) -> Result<bool, String>
+    where
+        R: io::BufRead,
+        W: Write,
+    {
+        write!(writer, "{}Overwrite? (y/N):{} ", COLOR_YELLOW, COLOR_RESET)
+            .map_err(|e| format!("Failed to write prompt: {}", e))?;
+        writer
             .flush()
             .map_err(|e| format!("Failed to flush stdout: {}", e))?;
 
         let mut input = String::new();
-        io::stdin()
+        reader
             .read_line(&mut input)
             .map_err(|e| format!("Failed to read input: {}", e))?;
 
@@ -1047,9 +1216,10 @@ impl AliasManager {
                 Vec::new()
             };
             let tx = tx.clone();
+            let runner = self.command_runner.clone();
 
             let handle = thread::spawn(move || {
-                let result = Self::execute_command_static(&cmd, &args);
+                let result = AliasManager::execute_with_runner(runner, cmd, args);
                 tx.send((index, result)).unwrap();
             });
 
@@ -1129,121 +1299,57 @@ impl AliasManager {
         command_str: &str,
         args: &[String],
     ) -> Result<i32, String> {
-        // Apply parameter substitution if the command contains variables
-        let resolved_command = if Self::has_parameter_variables(command_str) {
-            Self::substitute_parameters(command_str, args)
-        } else {
-            command_str.to_string()
-        };
+        let (program, command_args) = Self::prepare_command_invocation(command_str, args)?;
 
-        let mut command_parts: Vec<&str> = resolved_command.split_whitespace().collect();
-
-        if command_parts.is_empty() {
-            return Err("Empty command in alias".to_string());
-        }
-
-        let program = command_parts.remove(0);
-
-        // For backward compatibility: if no parameter variables were found,
-        // append args to maintain existing behavior
-        if !Self::has_parameter_variables(command_str) {
-            command_parts.extend(args.iter().map(|s| s.as_str()));
-        }
-
-        let mut cmd = Command::new(program);
-        cmd.args(&command_parts);
-
-        // Inherit stdio so the command runs interactively
-        cmd.stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
-        let status = cmd
-            .status()
-            .map_err(|e| format!("Failed to execute command '{}': {}", program, e))?;
-
-        Ok(status.code().unwrap_or(1))
-    }
-
-    fn execute_command_static(command_str: &str, args: &[String]) -> Result<i32, String> {
-        // Apply parameter substitution if the command contains variables
-        let resolved_command = if Self::has_parameter_variables(command_str) {
-            Self::substitute_parameters(command_str, args)
-        } else {
-            command_str.to_string()
-        };
-
-        let mut command_parts: Vec<&str> = resolved_command.split_whitespace().collect();
-
-        if command_parts.is_empty() {
-            return Err("Empty command in alias".to_string());
-        }
-
-        let program = command_parts.remove(0);
-
-        // For backward compatibility: if no parameter variables were found,
-        // append args to maintain existing behavior
-        if !Self::has_parameter_variables(command_str) {
-            command_parts.extend(args.iter().map(|s| s.as_str()));
-        }
-
-        let mut cmd = Command::new(program);
-        cmd.args(&command_parts);
-
-        // Inherit stdio so the command runs interactively
-        cmd.stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
-        let status = cmd
-            .status()
-            .map_err(|e| format!("Failed to execute command '{}': {}", program, e))?;
-
-        Ok(status.code().unwrap_or(1))
+        self.command_runner.run(&program, &command_args)
     }
 
     fn execute_single_command(&self, command_str: &str, args: &[String]) -> Result<(), String> {
-        // Apply parameter substitution if the command contains variables
-        let resolved_command = if Self::has_parameter_variables(command_str) {
+        let (program, command_args) = Self::prepare_command_invocation(command_str, args)?;
+
+        let exit_code = self.command_runner.run(&program, &command_args)?;
+
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+
+        Ok(())
+    }
+
+    fn execute_with_runner(
+        runner: Arc<dyn CommandRunner + Send + Sync>,
+        command_str: String,
+        args: Vec<String>,
+    ) -> Result<i32, String> {
+        let (program, command_args) =
+            AliasManager::prepare_command_invocation(&command_str, &args)?;
+        runner.run(&program, &command_args)
+    }
+    fn prepare_command_invocation(
+        command_str: &str,
+        args: &[String],
+    ) -> Result<(String, Vec<String>), String> {
+        let has_params = Self::has_parameter_variables(command_str);
+        let resolved_command = if has_params {
             Self::substitute_parameters(command_str, args)
         } else {
             command_str.to_string()
         };
 
-        let mut command_parts: Vec<&str> = resolved_command.split_whitespace().collect();
+        let mut tokens = shell_words::split(&resolved_command)
+            .map_err(|e| format!("Failed to parse command '{}': {}", resolved_command, e))?;
 
-        if command_parts.is_empty() {
+        if tokens.is_empty() {
             return Err("Empty command in alias".to_string());
         }
 
-        let program = command_parts.remove(0);
+        let program = tokens.remove(0);
 
-        // For backward compatibility: if no parameter variables were found,
-        // append args to maintain existing behavior
-        if !Self::has_parameter_variables(command_str) {
-            command_parts.extend(args.iter().map(|s| s.as_str()));
+        if !has_params {
+            tokens.extend(args.iter().cloned());
         }
 
-        let mut cmd = Command::new(program);
-        cmd.args(&command_parts);
-
-        // Inherit stdio so the command runs interactively
-        cmd.stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
-        let status = cmd
-            .status()
-            .map_err(|e| format!("Failed to execute command '{}': {}", program, e))?;
-
-        if !status.success() {
-            let exit_code = status.code().unwrap_or(1);
-            if exit_code != 0 {
-                std::process::exit(exit_code);
-            }
-        }
-
-        Ok(())
+        Ok((program, tokens))
     }
     fn substitute_parameters(command: &str, args: &[String]) -> String {
         let mut result = String::new();
@@ -1269,14 +1375,22 @@ impl AliasManager {
                             result.push_str(&args.join(" "));
                         }
                         '0'..='9' => {
-                            // $N -> Nth argument (1-indexed)
-                            let digit_char = chars.next().unwrap();
-                            if let Some(digit) = digit_char.to_digit(10) {
-                                let index = digit as usize;
+                            // $N -> Nth argument (1-indexed), support multi-digit
+                            let mut number = String::new();
+                            while let Some(&digit_ch) = chars.peek() {
+                                if digit_ch.is_ascii_digit() {
+                                    number.push(digit_ch);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            if let Ok(index) = number.parse::<usize>() {
                                 if index > 0 && index <= args.len() {
                                     result.push_str(&args[index - 1]);
                                 }
-                                // If index is out of bounds, substitute with empty string
+                                // If index is 0 or out of bounds, substitute with empty string
                             }
                         }
                         _ => {
@@ -1322,7 +1436,7 @@ impl AliasManager {
     }
 }
 
-fn print_help() {
+fn print_help(show_examples: bool) {
     // Main help content
     println!(
         "{}{}🚀 Alias Manager v{} - Cross-platform command alias tool{}",
@@ -1373,6 +1487,10 @@ fn print_help() {
     );
     println!(
         "  {}a{} {}--help{}                     Show this help",
+        COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
+    );
+    println!(
+        "  {}a{} {}--help --examples{}          Show help with detailed examples",
         COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
     );
     println!();
@@ -1434,31 +1552,13 @@ fn print_help() {
     );
     println!();
 
-    // Ask if user wants to see examples
-    if should_show_examples() {
+    if show_examples {
         print_examples();
     } else {
         println!(
-            "{}💡 Tip:{} Use {}a --help{} and press {}Enter{} to see detailed examples",
-            COLOR_CYAN, COLOR_RESET, COLOR_GREEN, COLOR_RESET, COLOR_YELLOW, COLOR_RESET
+            "{}💡 Tip:{} Run {}a --help --examples{} to view detailed workflows",
+            COLOR_CYAN, COLOR_RESET, COLOR_GREEN, COLOR_RESET
         );
-    }
-}
-
-fn should_show_examples() -> bool {
-    print!(
-        "{}📚 Show detailed examples? (Y/n):{} ",
-        COLOR_CYAN, COLOR_RESET
-    );
-    io::stdout().flush().unwrap_or(());
-
-    let mut input = String::new();
-    match io::stdin().read_line(&mut input) {
-        Ok(_) => {
-            let response = input.trim().to_lowercase();
-            response.is_empty() || response == "y" || response == "yes"
-        }
-        Err(_) => true, // Default to showing examples if input fails
     }
 }
 
@@ -1614,7 +1714,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        print_help();
+        print_help(false);
         return;
     }
 
@@ -1631,7 +1731,21 @@ fn main() {
 
     match args[1].as_str() {
         "--help" | "-h" => {
-            print_help();
+            let mut show_examples = false;
+            for extra in &args[2..] {
+                match extra.as_str() {
+                    "--examples" => show_examples = true,
+                    "--no-examples" => show_examples = false,
+                    _ => {
+                        eprintln!(
+                            "{}Unknown option for --help:{} {}",
+                            COLOR_YELLOW, COLOR_RESET, extra
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+            print_help(show_examples);
         }
 
         "--version" | "-v" => {
@@ -1903,18 +2017,255 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::env;
+    use std::ffi::{OsStr, OsString};
+    use std::io::{self, Cursor, Read, Write};
+    use std::net::TcpListener;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::thread;
+    use std::time::Duration;
     use tempfile::TempDir;
 
-    fn create_test_manager() -> (AliasManager, TempDir) {
+    #[derive(Default)]
+    struct MockCommandRunner {
+        calls: Mutex<Vec<(String, Vec<String>)>>,
+        responses: Mutex<VecDeque<Result<i32, String>>>,
+    }
+
+    impl MockCommandRunner {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn with_responses(responses: Vec<Result<i32, String>>) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                responses: Mutex::new(VecDeque::from(responses)),
+            }
+        }
+
+        fn push_response(&self, response: Result<i32, String>) {
+            self.responses.lock().unwrap().push_back(response);
+        }
+
+        fn calls(&self) -> Vec<(String, Vec<String>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandRunner for MockCommandRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<i32, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((program.to_string(), args.to_vec()));
+
+            if let Some(result) = self.responses.lock().unwrap().pop_front() {
+                result
+            } else {
+                Ok(0)
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct MockGitHubClient {
+        requests: Mutex<Vec<GitHubRequest>>,
+        responses: Mutex<VecDeque<Result<GitHubResponse, String>>>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct GitHubRequest {
+        method: String,
+        _url: String,
+        headers: Vec<(String, String)>,
+        body: Option<serde_json::Value>,
+    }
+
+    impl MockGitHubClient {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn with_responses(responses: Vec<Result<GitHubResponse, String>>) -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+                responses: Mutex::new(VecDeque::from(responses)),
+            }
+        }
+
+        fn requests(&self) -> Vec<GitHubRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl GitHubClient for MockGitHubClient {
+        fn get(&self, url: &str, headers: &[(&str, String)]) -> Result<GitHubResponse, String> {
+            self.requests.lock().unwrap().push(GitHubRequest {
+                method: "GET".to_string(),
+                _url: url.to_string(),
+                headers: headers
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), v.clone()))
+                    .collect(),
+                body: None,
+            });
+
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok(GitHubResponse::from_status(200)))
+        }
+
+        fn put(
+            &self,
+            url: &str,
+            headers: &[(&str, String)],
+            body: serde_json::Value,
+        ) -> Result<GitHubResponse, String> {
+            self.requests.lock().unwrap().push(GitHubRequest {
+                method: "PUT".to_string(),
+                _url: url.to_string(),
+                headers: headers
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), v.clone()))
+                    .collect(),
+                body: Some(body.clone()),
+            });
+
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok(GitHubResponse::from_status(200)))
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn http_response(status: u16, reason: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            status,
+            reason,
+            body.len(),
+            body
+        )
+    }
+
+    fn spawn_stub_server(responses: Vec<String>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("send stub response");
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    fn spawn_drop_server() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer);
+                // Drop without sending a response to trigger transport error.
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    fn create_manager_with_mocks(
+        command_responses: Vec<Result<i32, String>>,
+        github_responses: Vec<Result<GitHubResponse, String>>,
+    ) -> (
+        AliasManager,
+        TempDir,
+        Arc<MockCommandRunner>,
+        Arc<MockGitHubClient>,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.json");
 
-        let manager = AliasManager {
-            config: Config::new(),
-            config_path,
-        };
+        let runner = Arc::new(MockCommandRunner::with_responses(command_responses));
+        let github = Arc::new(MockGitHubClient::with_responses(github_responses));
 
+        let runner_trait: Arc<dyn CommandRunner + Send + Sync> = runner.clone();
+        let github_trait: Arc<dyn GitHubClient + Send + Sync> = github.clone();
+
+        let manager =
+            AliasManager::with_dependencies(Config::new(), config_path, runner_trait, github_trait);
+
+        (manager, temp_dir, runner, github)
+    }
+
+    fn create_test_manager() -> (AliasManager, TempDir) {
+        let (manager, temp_dir, _runner, _github) =
+            create_manager_with_mocks(Vec::new(), Vec::new());
         (manager, temp_dir)
+    }
+
+    struct WorkingDirGuard {
+        original: PathBuf,
+    }
+
+    impl WorkingDirGuard {
+        fn change_to(target: &Path) -> io::Result<Self> {
+            let original = env::current_dir()?;
+            env::set_current_dir(target)?;
+            Ok(Self { original })
+        }
+    }
+
+    impl Drop for WorkingDirGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.original);
+        }
+    }
+
+    struct EnvVarGuard {
+        key: String,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set<K, V>(key: K, value: V) -> Self
+        where
+            K: Into<String>,
+            V: AsRef<OsStr>,
+        {
+            let key_string = key.into();
+            let original = env::var_os(&key_string);
+            env::set_var(&key_string, value.as_ref());
+            Self {
+                key: key_string,
+                original,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(val) => env::set_var(&self.key, val),
+                None => env::remove_var(&self.key),
+            }
+        }
     }
 
     #[test]
@@ -2054,10 +2405,15 @@ mod tests {
             .unwrap();
 
         // Load a new manager from the saved config
-        let loaded_manager = AliasManager {
-            config: AliasManager::load_config(&manager.config_path).unwrap(),
-            config_path: manager.config_path.clone(),
-        };
+        let loaded_runner: Arc<dyn CommandRunner + Send + Sync> =
+            Arc::new(MockCommandRunner::new());
+        let loaded_github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
+        let loaded_manager = AliasManager::with_dependencies(
+            AliasManager::load_config(&manager.config_path).unwrap(),
+            manager.config_path.clone(),
+            loaded_runner,
+            loaded_github,
+        );
 
         let entry = loaded_manager.config.get_alias("test").unwrap();
         assert_eq!(entry.command_display(), "echo hello");
@@ -2140,6 +2496,11 @@ mod tests {
     fn test_config_path_creation() {
         // This test verifies the path logic works, but doesn't actually create files
         // in the user's home directory during testing
+        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock().lock().unwrap();
+        let _home_guard = EnvVarGuard::set("HOME", temp_dir.path());
+        let _userprofile_guard = EnvVarGuard::set("USERPROFILE", temp_dir.path());
+
         let path_result = AliasManager::get_config_path();
         assert!(path_result.is_ok());
 
@@ -2327,6 +2688,19 @@ mod tests {
     }
 
     #[test]
+    fn test_substitute_parameters_multi_digit() {
+        let args = (1..=12).map(|i| format!("val{}", i)).collect::<Vec<_>>();
+        assert_eq!(
+            AliasManager::substitute_parameters("echo $10", &args),
+            "echo val10"
+        );
+        assert_eq!(
+            AliasManager::substitute_parameters("$12-$1", &args),
+            "val12-val1"
+        );
+    }
+
+    #[test]
     fn test_parameter_substitution_integration() {
         let mut config = Config::new();
 
@@ -2387,7 +2761,7 @@ mod tests {
         fs::create_dir_all(&target_dir).unwrap();
 
         // Change to the target directory (simulate current directory)
-        env::set_current_dir(&target_dir).unwrap();
+        let _dir_guard = WorkingDirGuard::change_to(&target_dir).unwrap();
 
         // Export config (should go to current directory)
         let result = manager.export_config(None);
@@ -2473,10 +2847,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("nonexistent_config.json");
 
-        let manager = AliasManager {
-            config: Config::new(),
-            config_path,
-        };
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockCommandRunner::new());
+        let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
+        let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
 
         let target_dir = temp_dir.path().join("target");
         let result = manager.export_config(Some(target_dir.to_str().unwrap()));
@@ -2512,5 +2885,534 @@ mod tests {
         assert!(result
             .unwrap_err()
             .contains("exists but is not a directory"));
+    }
+
+    #[test]
+    fn test_github_token_precedence() {
+        let _env_guard = env_lock().lock().unwrap();
+        let _gh_guard = EnvVarGuard::set("GH_TOKEN", "third");
+        let _git_guard = EnvVarGuard::set("GITHUB_TOKEN", "second");
+        let _a_guard = EnvVarGuard::set("A_GITHUB_TOKEN", "first");
+
+        assert_eq!(AliasManager::github_token().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn test_push_config_to_github_updates_existing_file() {
+        let _env_guard = env_lock().lock().unwrap();
+        let responses = vec![
+            Ok(GitHubResponse::from_json(
+                200,
+                serde_json::json!({"sha": "existing-sha"}),
+            )),
+            Ok(GitHubResponse::from_status(200)),
+        ];
+        let (manager, _temp_dir, _runner, github) =
+            create_manager_with_mocks(Vec::new(), responses);
+
+        fs::write(&manager.config_path, r#"{"aliases":{}}"#).unwrap();
+        let _token_guard = EnvVarGuard::set("A_GITHUB_TOKEN", "test-token");
+
+        manager
+            .push_config_to_github(Some("test message"))
+            .expect("push succeeds");
+
+        let requests = github.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "GET");
+        let put_request = requests
+            .iter()
+            .find(|req| req.method == "PUT")
+            .expect("PUT request captured");
+        let body = put_request.body.as_ref().expect("body present");
+        assert_eq!(body["message"], "test message");
+        assert_eq!(body["sha"], "existing-sha");
+        assert!(put_request
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer test-token"));
+    }
+
+    #[test]
+    fn test_push_config_to_github_creates_file_when_missing() {
+        let _env_guard = env_lock().lock().unwrap();
+        let responses = vec![
+            Ok(GitHubResponse::from_status(404)),
+            Ok(GitHubResponse::from_status(201)),
+        ];
+        let (manager, _temp_dir, _runner, github) =
+            create_manager_with_mocks(Vec::new(), responses);
+
+        fs::write(&manager.config_path, r#"{"aliases":{}}"#).unwrap();
+        let _token_guard = EnvVarGuard::set("A_GITHUB_TOKEN", "push-token");
+
+        manager.push_config_to_github(None).expect("push succeeds");
+
+        let requests = github.requests();
+        assert_eq!(requests.len(), 2);
+        let body = requests
+            .iter()
+            .find(|req| req.method == "PUT")
+            .and_then(|req| req.body.as_ref())
+            .expect("body present");
+        assert_eq!(
+            body["message"],
+            serde_json::Value::String("chore(config): update alias config".to_string())
+        );
+        assert!(body.get("sha").is_none());
+    }
+
+    #[test]
+    fn test_push_config_to_github_propagates_failure() {
+        let _env_guard = env_lock().lock().unwrap();
+        let responses = vec![
+            Ok(GitHubResponse::from_status(404)),
+            Ok(GitHubResponse::from_status(500)),
+        ];
+        let (manager, _temp_dir, _runner, _github) =
+            create_manager_with_mocks(Vec::new(), responses);
+
+        fs::write(&manager.config_path, r#"{"aliases":{}}"#).unwrap();
+        let _token_guard = EnvVarGuard::set("A_GITHUB_TOKEN", "push-token");
+
+        let err = manager
+            .push_config_to_github(None)
+            .expect_err("push should fail");
+        assert!(err.contains("GitHub API returned status 500"));
+    }
+
+    #[test]
+    fn test_pull_config_from_github_writes_file_and_backup() {
+        let _env_guard = env_lock().lock().unwrap();
+        let new_config = r#"{"aliases":{"remote":{"command_type":{"Simple":"echo remote"},"description":null,"created":"2025-10-20"}}}"#;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(new_config);
+        let responses = vec![Ok(GitHubResponse::from_json(
+            200,
+            serde_json::json!({
+                "encoding": "base64",
+                "content": encoded
+            }),
+        ))];
+        let (mut manager, temp_dir, _runner, github) =
+            create_manager_with_mocks(Vec::new(), responses);
+
+        let existing_config = r#"{"aliases":{"local":{"command_type":{"Simple":"echo local"},"description":null,"created":"2025-01-01"}}}"#;
+        fs::write(&manager.config_path, existing_config).unwrap();
+        let backup_path = manager
+            .config_path
+            .parent()
+            .unwrap()
+            .join("config.backup.json");
+
+        let _token_guard = EnvVarGuard::set("GITHUB_TOKEN", "pull-token");
+
+        manager.pull_config_from_github().expect("pull succeeds");
+
+        assert!(backup_path.exists());
+        let written = fs::read_to_string(&manager.config_path).unwrap();
+        assert_eq!(written, new_config);
+        assert!(manager.config.aliases.contains_key("remote"));
+
+        let requests = github.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "GET");
+        assert!(requests[0]
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer pull-token"));
+
+        let _ = fs::remove_file(temp_dir.path().join("config.backup.json"));
+    }
+
+    #[test]
+    fn test_pull_config_from_github_invalid_encoding_errors() {
+        let _env_guard = env_lock().lock().unwrap();
+        let responses = vec![Ok(GitHubResponse::from_json(
+            200,
+            serde_json::json!({
+                "encoding": "utf-8",
+                "content": "not-base64"
+            }),
+        ))];
+        let (mut manager, _temp_dir, _runner, _github) =
+            create_manager_with_mocks(Vec::new(), responses);
+
+        let err = manager
+            .pull_config_from_github()
+            .expect_err("pull should fail");
+        assert!(err.contains("Unsupported encoding"));
+    }
+
+    #[test]
+    fn test_execute_with_real_runner_success() {
+        let _env_guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        fs::write(&config_path, r#"{"aliases":{}}"#).unwrap();
+
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
+        let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+
+        #[cfg(windows)]
+        let command = "cmd /C exit 0";
+        #[cfg(not(windows))]
+        let command = "true";
+
+        let exit = manager
+            .execute_single_command_with_exit_code(command, &[])
+            .expect("command succeeds");
+        assert_eq!(exit, 0);
+    }
+
+    #[test]
+    fn test_execute_with_real_runner_failure() {
+        let _env_guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        fs::write(&config_path, r#"{"aliases":{}}"#).unwrap();
+
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
+        let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+
+        let err = manager
+            .execute_single_command_with_exit_code("definitely-not-a-real-binary", &[])
+            .expect_err("expected failure");
+        assert!(err.contains("Failed to execute command"));
+    }
+
+    #[test]
+    fn test_print_help_and_examples() {
+        // Calls are captured by the test harness, keeping stdout noise minimal.
+        print_help(false);
+        print_help(true);
+    }
+
+    #[test]
+    fn test_print_version() {
+        print_version();
+    }
+
+    #[test]
+    fn test_ureq_github_client_get_success() {
+        let body = r#"{"sha":"abc"}"#;
+        let (url, handle) = spawn_stub_server(vec![http_response(200, "OK", body)]);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(1))
+            .build();
+        let client = UreqGitHubClient::with_agent(agent);
+
+        let response = client
+            .get(
+                &format!("{}/content", url),
+                &[("User-Agent", "test".into())],
+            )
+            .expect("request succeeds");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.json().unwrap()["sha"], "abc");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_ureq_github_client_get_not_found() {
+        let body = r#"{"message":"not found"}"#;
+        let (url, handle) = spawn_stub_server(vec![http_response(404, "Not Found", body)]);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(1))
+            .build();
+        let client = UreqGitHubClient::with_agent(agent);
+
+        let response = client
+            .get(
+                &format!("{}/missing", url),
+                &[("User-Agent", "test".into())],
+            )
+            .expect("request succeeds");
+        assert_eq!(response.status(), 404);
+        assert!(response.body().unwrap().contains("not found"));
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_ureq_github_client_put_success() {
+        let responses = vec![http_response(201, "Created", r#"{"ok":true}"#)];
+        let (url, handle) = spawn_stub_server(responses);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(1))
+            .build();
+        let client = UreqGitHubClient::with_agent(agent);
+
+        let response = client
+            .put(
+                &format!("{}/update", url),
+                [("User-Agent", "test".to_string())].as_ref(),
+                serde_json::json!({"message":"hi"}),
+            )
+            .expect("request succeeds");
+        assert_eq!(response.status(), 201);
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_ureq_github_client_get_transport_error() {
+        let (url, handle) = spawn_drop_server();
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(1))
+            .build();
+        let client = UreqGitHubClient::with_agent(agent);
+
+        let err = client
+            .get(&format!("{}/drop", url), &[("User-Agent", "test".into())])
+            .expect_err("expected transport error");
+        assert!(err.contains("Failed to perform GitHub GET"));
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_ureq_github_client_put_transport_error() {
+        let (url, handle) = spawn_drop_server();
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(1))
+            .build();
+        let client = UreqGitHubClient::with_agent(agent);
+
+        let err = client
+            .put(
+                &format!("{}/update", url),
+                [("User-Agent", "test".to_string())].as_ref(),
+                serde_json::json!({"message":"hi"}),
+            )
+            .expect_err("expected transport error");
+        assert!(err.contains("Failed to perform GitHub PUT"));
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_system_command_runner_success() {
+        let runner = SystemCommandRunner::default();
+        #[cfg(windows)]
+        let args = vec!["/C".to_string(), "exit 0".to_string()];
+        #[cfg(not(windows))]
+        let args: Vec<String> = Vec::new();
+
+        #[cfg(windows)]
+        let program = "cmd";
+        #[cfg(not(windows))]
+        let program = "true";
+
+        let exit = runner.run(program, &args).expect("command succeeds");
+        assert_eq!(exit, 0);
+    }
+
+    #[test]
+    fn test_system_command_runner_missing_program_errors() {
+        let runner = SystemCommandRunner::default();
+        let err = runner
+            .run("definitely-not-a-real-binary", &[])
+            .expect_err("expected failure");
+        assert!(err.contains("Failed to execute command"));
+    }
+
+    #[test]
+    fn test_prepare_command_invocation_handles_quoted_args() {
+        let args: Vec<String> = Vec::new();
+        let (program, command_args) =
+            AliasManager::prepare_command_invocation("git commit -m \"fix login flow\"", &args)
+                .unwrap();
+
+        assert_eq!(program, "git");
+        assert_eq!(
+            command_args,
+            vec![
+                "commit".to_string(),
+                "-m".to_string(),
+                "fix login flow".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_migrate_legacy_config_preserves_aliases() {
+        let legacy = r#"
+        {
+            "aliases": {
+                "gst": {
+                    "command": "git status",
+                    "description": "Quick status",
+                    "created": "2024-01-01"
+                }
+            }
+        }
+        "#;
+
+        let config = AliasManager::migrate_legacy_config(legacy).expect("migrate legacy");
+        let entry = config.aliases.get("gst").expect("alias migrated");
+
+        match &entry.command_type {
+            CommandType::Simple(cmd) => assert_eq!(cmd, "git status"),
+            other => panic!("unexpected command type: {:?}", other),
+        }
+        assert_eq!(entry.description.as_deref(), Some("Quick status"));
+        assert_eq!(entry.created, "2024-01-01");
+    }
+
+    #[test]
+    fn test_load_config_migrates_legacy_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let legacy_path = temp_dir.path().join("legacy.json");
+        let legacy = r#"
+        {
+            "aliases": {
+                "build": {
+                    "command": "npm run build",
+                    "description": null,
+                    "created": "2023-12-12"
+                }
+            }
+        }
+        "#;
+        fs::write(&legacy_path, legacy).unwrap();
+
+        let config = AliasManager::load_config(&legacy_path).expect("load config");
+        let entry = config.aliases.get("build").expect("build alias present");
+        match &entry.command_type {
+            CommandType::Simple(cmd) => assert_eq!(cmd, "npm run build"),
+            other => panic!("unexpected command type: {:?}", other),
+        }
+        assert_eq!(entry.description, None);
+    }
+
+    #[test]
+    fn test_confirm_overwrite_yes() {
+        let mut reader = Cursor::new(b"y\n".to_vec());
+        let mut output = Vec::new();
+        let result = AliasManager::confirm_overwrite_with_reader(&mut reader, &mut output).unwrap();
+        assert!(result);
+        let prompt = String::from_utf8(output).unwrap();
+        assert!(prompt.contains("Overwrite?"));
+    }
+
+    #[test]
+    fn test_confirm_overwrite_no_default() {
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut output = Vec::new();
+        let result = AliasManager::confirm_overwrite_with_reader(&mut reader, &mut output).unwrap();
+        assert!(!result);
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::Other, "cannot write"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_confirm_overwrite_write_error() {
+        let mut reader = Cursor::new(b"y\n".to_vec());
+        let mut writer = FailingWriter;
+        let err = AliasManager::confirm_overwrite_with_reader(&mut reader, &mut writer)
+            .expect_err("expected write failure");
+        assert!(err.contains("Failed to write prompt"));
+    }
+
+    #[test]
+    fn test_execute_alias_simple_runs_command() {
+        let (mut manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(Vec::new(), Vec::new());
+        runner.push_response(Ok(0));
+
+        manager
+            .add_alias(
+                "hello".to_string(),
+                CommandType::Simple("echo hello".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
+
+        manager.execute_alias("hello", &[]).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "echo");
+        assert_eq!(calls[0].1, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_respects_conditions() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Ok(1), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo second".to_string(),
+                    operator: Some(ChainOperator::And),
+                },
+                ChainCommand {
+                    command: "echo third".to_string(),
+                    operator: Some(ChainOperator::Or),
+                },
+            ],
+            parallel: false,
+        };
+
+        manager
+            .execute_sequential_chain(&chain, &[])
+            .expect("sequential chain succeeds");
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].0, "echo");
+        assert_eq!(calls[1].0, "echo");
+        assert_eq!(calls[2].0, "echo");
+    }
+
+    #[test]
+    fn test_execute_parallel_chain_reports_failures() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Err("boom".to_string()), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo alpha".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo beta".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo gamma".to_string(),
+                    operator: None,
+                },
+            ],
+            parallel: true,
+        };
+
+        let err = manager
+            .execute_parallel_chain(&chain, &[])
+            .expect_err("parallel chain should fail");
+        assert!(err.contains("parallel commands failed"));
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3);
     }
 }
