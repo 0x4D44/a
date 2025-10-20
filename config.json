@@ -1,29 +1,45 @@
 {
   "aliases": {
-    "tagp": {
+    "ls": {
       "command_type": {
-        "Chain": {
-          "commands": [
-            {
-              "command": "git tag $1",
-              "operator": null
-            },
-            {
-              "command": "git push origin $1",
-              "operator": "And"
-            }
-          ],
-          "parallel": false
-        }
+        "Simple": "ls -la"
       },
-      "description": null,
-      "created": "2025-09-04"
+      "description": "List files with details",
+      "created": "2025-06-23"
     },
-    "mdf": {
+    "gst": {
       "command_type": {
-        "Simple": "mdcode gh_fetch ."
+        "Simple": "git status --porcelain"
       },
       "description": null,
+      "created": "2025-06-23"
+    },
+    "mds": {
+      "command_type": {
+        "Simple": "mdcode gh_sync ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "cbr": {
+      "command_type": {
+        "Simple": "cargo build --release && mdrcp"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mdi": {
+      "command_type": {
+        "Simple": "mdcode info ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mytest": {
+      "command_type": {
+        "Simple": "echo hello world"
+      },
+      "description": "Test command",
       "created": "2025-06-23"
     },
     "cdxu": {
@@ -49,58 +65,23 @@
       "description": null,
       "created": "2025-09-06"
     },
-    "cbr": {
+    "dir": {
       "command_type": {
-        "Simple": "cargo build --release && mdrcp"
+        "Simple": "dir /b"
       },
       "description": null,
       "created": "2025-06-23"
     },
-    "mdi": {
+    "gc": {
       "command_type": {
-        "Simple": "mdcode info ."
+        "Simple": "git clone https://github.com/0x4D44/$1"
       },
       "description": null,
-      "created": "2025-06-23"
+      "created": "2025-10-20"
     },
-    "ls": {
+    "mddl": {
       "command_type": {
-        "Simple": "ls -la"
-      },
-      "description": "List files with details",
-      "created": "2025-06-23"
-    },
-    "mytest": {
-      "command_type": {
-        "Simple": "echo hello world"
-      },
-      "description": "Test command",
-      "created": "2025-06-23"
-    },
-    "mds": {
-      "command_type": {
-        "Simple": "mdcode gh_sync ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "cbt": {
-      "command_type": {
-        "Simple": "cargo test"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "mdu": {
-      "command_type": {
-        "Simple": "mdcode update ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "gst": {
-      "command_type": {
-        "Simple": "git status --porcelain"
+        "Simple": "mdcode diff . L"
       },
       "description": null,
       "created": "2025-06-23"
@@ -112,6 +93,25 @@
       "description": null,
       "created": "2025-09-01"
     },
+    "tagp": {
+      "command_type": {
+        "Chain": {
+          "commands": [
+            {
+              "command": "git tag $1",
+              "operator": null
+            },
+            {
+              "command": "git push origin $1",
+              "operator": "And"
+            }
+          ],
+          "parallel": false
+        }
+      },
+      "description": null,
+      "created": "2025-09-04"
+    },
     "mdp": {
       "command_type": {
         "Simple": "mdcode gh_push ."
@@ -119,16 +119,16 @@
       "description": null,
       "created": "2025-06-23"
     },
-    "mdt": {
+    "mdu": {
       "command_type": {
-        "Simple": "mdcode tag ."
+        "Simple": "mdcode update ."
       },
       "description": null,
-      "created": "2025-09-07"
+      "created": "2025-06-23"
     },
-    "mddl": {
+    "al": {
       "command_type": {
-        "Simple": "mdcode diff . L"
+        "Simple": "a --list"
       },
       "description": null,
       "created": "2025-06-23"
@@ -140,9 +140,9 @@
       "description": null,
       "created": "2025-08-25"
     },
-    "al": {
+    "cbt": {
       "command_type": {
-        "Simple": "a --list"
+        "Simple": "cargo test"
       },
       "description": null,
       "created": "2025-06-23"
@@ -154,12 +154,19 @@
       "description": null,
       "created": "2025-06-23"
     },
-    "dir": {
+    "mdf": {
       "command_type": {
-        "Simple": "dir /b"
+        "Simple": "mdcode gh_fetch ."
       },
       "description": null,
       "created": "2025-06-23"
+    },
+    "mdt": {
+      "command_type": {
+        "Simple": "mdcode tag ."
+      },
+      "description": null,
+      "created": "2025-09-07"
     }
   }
 }
