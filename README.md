@@ -10,7 +10,7 @@ A cross-platform command alias management tool written in Rust. Provides a simpl
 - **Safe**: Reserved namespace prevents conflicts with management commands
 - **Persistent**: Aliases are stored in JSON configuration file
 - **Enhanced UX**: Beautiful colorized output with emojis and visual hierarchy
-- **Interactive help**: Optional examples with user-friendly prompts
+- **Interactive help**: Use `--help --examples` for guided walkthroughs without prompts
 - **Overwrite protection**: Prevents accidental alias overwrites with confirmation prompts
 - **Advanced command chaining**: Sophisticated workflow automation with multiple operators
 - **Parallel execution**: Run multiple commands simultaneously with thread synchronization
@@ -165,7 +165,7 @@ a --config
 a --version
 
 # Show help
-a --help
+a --help [--examples]
 ```
 
 ### Executing Aliases
@@ -228,6 +228,29 @@ a --pull                       # pulls latest (backs up existing)
 Aliases are stored in:
 - **Windows**: `%USERPROFILE%\.alias-mgr\config.json`
 - **Linux/macOS**: `~/.alias-mgr/config.json`
+
+## Testing & Coverage
+
+Run the standard checks before pushing changes:
+
+```bash
+cargo fmt
+cargo clippy -- -D warnings
+cargo test
+```
+
+To inspect coverage:
+
+```bash
+# Fast JSON summary (captured by CI)
+cargo llvm-cov --json --summary-only --output-path coverage-summary.json
+
+# Optional deeper dives
+cargo llvm-cov --text --show-missing-lines
+cargo llvm-cov --html --open
+```
+
+We aim to keep **line coverage ≥ 80 %** and **function coverage ≥ 75 %**. Commit the refreshed `coverage-summary.json` alongside feature work so trends remain visible.
 
 The configuration file is automatically created and updated when you add/remove aliases.
 
@@ -335,6 +358,7 @@ This design eliminates conflicts between management commands and user aliases wh
   - Defaults to repo `0x4d44/a`, branch `main`, path `config.json`
   - Uses `A_GITHUB_TOKEN`/`GITHUB_TOKEN`/`GH_TOKEN` for authentication (push requires token)
   - Safe pull: creates `config.backup.json` before overwriting
+  - Help examples moved behind `--help --examples` flag to keep default output non-interactive
 
 - **v1.1.0**:
   - **Enhanced Help System**: Interactive help with optional examples
