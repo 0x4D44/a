@@ -1,6 +1,7 @@
 use base64::Engine;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -65,7 +66,9 @@ struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, program: &str, args: &[String]) -> Result<i32, String> {
-        let mut cmd = Command::new(program);
+        let program_os = Self::prepare_program(program);
+
+        let mut cmd = Command::new(&program_os);
         cmd.args(args);
 
         cmd.stdin(Stdio::inherit())
@@ -77,6 +80,88 @@ impl CommandRunner for SystemCommandRunner {
             .map_err(|e| format!("Failed to execute command '{}': {}", program, e))?;
 
         Ok(status.code().unwrap_or(1))
+    }
+}
+
+impl SystemCommandRunner {
+    fn prepare_program(program: &str) -> OsString {
+        #[cfg(windows)]
+        {
+            if let Some(resolved) = Self::resolve_windows_program(program) {
+                return resolved.into_os_string();
+            }
+        }
+
+        OsString::from(program)
+    }
+
+    #[cfg(windows)]
+    fn resolve_windows_program(program: &str) -> Option<PathBuf> {
+        use std::path::Path;
+
+        let path = Path::new(program);
+
+        if path.extension().is_some() {
+            return None;
+        }
+
+        let pathext = env::var_os("PATHEXT")
+            .filter(|val| !val.is_empty())
+            .unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
+
+        let mut extensions: Vec<Option<String>> = vec![None];
+
+        for raw_ext in pathext.to_string_lossy().split(';') {
+            let trimmed = raw_ext.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let cleaned = trimmed.trim_start_matches('.');
+            if cleaned.is_empty() {
+                continue;
+            }
+            extensions.push(Some(cleaned.to_string()));
+        }
+
+        if extensions.iter().all(|ext| ext.is_none()) {
+            for default in ["COM", "EXE", "BAT", "CMD"] {
+                extensions.push(Some(default.to_string()));
+            }
+        }
+
+        let has_separator = program.contains('\\') || program.contains('/');
+
+        if has_separator {
+            let base = PathBuf::from(program);
+            for ext in &extensions {
+                let mut candidate = base.clone();
+                if let Some(ext) = ext {
+                    candidate.set_extension(ext);
+                }
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+            return None;
+        }
+
+        let path_var = env::var_os("PATH")?;
+        for dir in env::split_paths(&path_var) {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            for ext in &extensions {
+                let mut candidate = dir.join(program);
+                if let Some(ext) = ext {
+                    candidate.set_extension(ext);
+                }
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -3063,6 +3148,69 @@ mod tests {
             .execute_single_command_with_exit_code(command, &[])
             .expect("command succeeds");
         assert_eq!(exit, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_system_runner_executes_cmd_from_path() {
+        let _env_guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let script_path = temp_dir.path().join("shim.cmd");
+        fs::write(&script_path, b"@echo off\r\nexit 0\r\n").unwrap();
+
+        let original_path = env::var("PATH").unwrap_or_default();
+        let new_path = if original_path.is_empty() {
+            temp_dir.path().display().to_string()
+        } else {
+            format!("{};{}", temp_dir.path().display(), original_path)
+        };
+        let _path_guard = EnvVarGuard::set("PATH", new_path);
+        let _pathext_guard = EnvVarGuard::set("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+
+        let runner = SystemCommandRunner::default();
+        let exit = runner.run("shim", &[]).expect("command succeeds");
+        assert_eq!(exit, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_execute_alias_runs_cmd_shim() {
+        let _env_guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        fs::write(&config_path, r#"{"aliases":{}}"#).unwrap();
+
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script_path = bin_dir.join("shim.cmd");
+        fs::write(&script_path, b"@echo off\r\nexit 0\r\n").unwrap();
+
+        let original_path = env::var("PATH").unwrap_or_default();
+        let new_path = if original_path.is_empty() {
+            bin_dir.display().to_string()
+        } else {
+            format!("{};{}", bin_dir.display(), original_path)
+        };
+        let _path_guard = EnvVarGuard::set("PATH", new_path);
+        let _pathext_guard = EnvVarGuard::set("PATHEXT", "");
+
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
+        let mut manager =
+            AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+
+        manager
+            .add_alias(
+                "shim".to_string(),
+                CommandType::Simple("shim".to_string()),
+                None,
+                false,
+            )
+            .expect("alias added");
+
+        manager
+            .execute_alias("shim", &[])
+            .expect("alias executes successfully");
     }
 
     #[test]

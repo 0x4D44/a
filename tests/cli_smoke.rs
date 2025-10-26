@@ -18,13 +18,17 @@ fn alias_config_path(home: &TempDir) -> PathBuf {
     config_dir.join("config.json")
 }
 
+fn version_fragment() -> String {
+    format!("Alias Manager v{}", env!("CARGO_PKG_VERSION"))
+}
+
 #[test]
 fn no_args_shows_primary_help() {
     Command::cargo_bin("a")
         .expect("binary exists")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Alias Manager v1.3.0"));
+        .stdout(predicate::str::contains(version_fragment()));
 }
 
 #[test]
@@ -46,7 +50,7 @@ fn version_flag_prints_version_banner() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Alias Manager v1.3.0"));
+        .stdout(predicate::str::contains(version_fragment()));
 }
 
 #[test]
