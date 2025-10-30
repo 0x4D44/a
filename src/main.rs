@@ -109,8 +109,7 @@ impl SystemCommandRunner {
             .filter(|val| !val.is_empty())
             .unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
 
-        let mut extensions: Vec<Option<String>> = vec![None];
-
+        let mut pathext_exts: Vec<String> = Vec::new();
         for raw_ext in pathext.to_string_lossy().split(';') {
             let trimmed = raw_ext.trim();
             if trimmed.is_empty() {
@@ -120,16 +119,29 @@ impl SystemCommandRunner {
             if cleaned.is_empty() {
                 continue;
             }
-            extensions.push(Some(cleaned.to_string()));
+            pathext_exts.push(cleaned.to_string());
         }
 
-        if extensions.iter().all(|ext| ext.is_none()) {
+        if pathext_exts.is_empty() {
             for default in ["COM", "EXE", "BAT", "CMD"] {
-                extensions.push(Some(default.to_string()));
+                pathext_exts.push(default.to_string());
             }
         }
 
         let has_separator = program.contains('\\') || program.contains('/');
+        let mut extensions: Vec<Option<String>> = Vec::new();
+
+        if has_separator {
+            extensions.push(None);
+        }
+
+        for ext in &pathext_exts {
+            extensions.push(Some(ext.clone()));
+        }
+
+        if !has_separator {
+            extensions.push(None);
+        }
 
         if has_separator {
             let base = PathBuf::from(program);
@@ -3193,6 +3205,51 @@ mod tests {
         };
         let _path_guard = EnvVarGuard::set("PATH", new_path);
         let _pathext_guard = EnvVarGuard::set("PATHEXT", "");
+
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
+        let mut manager =
+            AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+
+        manager
+            .add_alias(
+                "shim".to_string(),
+                CommandType::Simple("shim".to_string()),
+                None,
+                false,
+            )
+            .expect("alias added");
+
+        manager
+            .execute_alias("shim", &[])
+            .expect("alias executes successfully");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_execute_alias_prefers_cmd_over_extensionless() {
+        let _env_guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        fs::write(&config_path, r#"{"aliases":{}}"#).unwrap();
+
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let extensionless = bin_dir.join("shim");
+        fs::write(&extensionless, b"This is not a Windows executable.\n").unwrap();
+
+        let cmd_path = bin_dir.join("shim.cmd");
+        fs::write(&cmd_path, b"@echo off\r\nexit 0\r\n").unwrap();
+
+        let original_path = env::var("PATH").unwrap_or_default();
+        let new_path = if original_path.is_empty() {
+            bin_dir.display().to_string()
+        } else {
+            format!("{};{}", bin_dir.display(), original_path)
+        };
+        let _path_guard = EnvVarGuard::set("PATH", new_path);
+        let _pathext_guard = EnvVarGuard::set("PATHEXT", ".CMD");
 
         let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
