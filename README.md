@@ -1,6 +1,6 @@
 # Alias Manager (`a`) v1.4.0
 
-A cross-platform command alias management tool written in Rust. Provides a simple way to create, manage, and execute command aliases that work on both Windows and Linux.
+A cross-platform command alias management tool written in Rust. Provides a powerful and intuitive way to create, manage, and execute command aliases with advanced features like command chaining, parallel execution, conditional logic, and parameter substitution that work seamlessly across Windows, Linux, and macOS.
 
 ## Features
 
@@ -18,7 +18,9 @@ A cross-platform command alias management tool written in Rust. Provides a simpl
 - **Progress feedback**: Clear visibility into execution progress and command flow
 - **Backward compatibility**: Seamless migration from older versions
 - **Cross-platform security**: No shell dependency eliminates injection vulnerabilities
-- **GitHub sync**: Push and pull config.json with a single command
+- **GitHub sync**: Push and pull config.json with a single command (supports multiple auth methods)
+- **Parameter substitution**: Use $1, $2, $@, $* for dynamic arguments in aliases
+- **Smart argument handling**: Arguments passed intelligently to final command or substituted throughout chains
 
 ## Command Chaining
 
@@ -115,6 +117,60 @@ a --add git-check "git status --porcelain" --if-code 0 "echo 'Clean!'" --if-code
 # Complex parallel testing
 a --add test-all "npm run unit-tests" --and "npm run integration-tests" --and "npm run e2e-tests" --parallel
 ```
+
+## Parameter Substitution
+
+Aliases support dynamic parameter substitution, allowing you to create flexible, reusable commands that accept arguments at runtime.
+
+### Substitution Syntax:
+
+- **`$1, $2, $3, ...`**: Individual positional arguments (1-indexed, supports multi-digit like $10, $11)
+- **`$@`**: All arguments as space-separated values
+- **`$*`**: All arguments as space-separated values (equivalent to $@)
+- **`$$`**: Literal dollar sign (escape sequence)
+
+### How It Works:
+
+When you use parameter variables in an alias command:
+1. Arguments are **substituted** into the command string at the variable positions
+2. The resolved command is then executed
+3. If no variables are present, arguments are **appended** to the command (backward compatibility)
+
+### Examples:
+
+```bash
+# Single parameter substitution
+a --add tag-push "git tag $1" --and "git push origin $1"
+a tag-push v1.2.3  # Executes: git tag v1.2.3 && git push origin v1.2.3
+
+# Multiple parameters
+a --add docker-deploy "docker tag $1:$2" --and "docker push $1:$2"
+a docker-deploy myapp latest  # Executes: docker tag myapp:latest && docker push myapp:latest
+
+# All arguments with $@
+a --add test-files "pytest $@"
+a test-files test1.py test2.py test3.py  # Executes: pytest test1.py test2.py test3.py
+
+# Multiple occurrences of same parameter
+a --add git-commit "git add $1" --and "git commit -m 'Updated $1'"
+a git-commit README.md  # Executes: git add README.md && git commit -m 'Updated README.md'
+
+# Literal dollar sign
+a --add show-price "echo The price is $$100"
+a show-price  # Executes: echo The price is $100
+
+# Complex example with multiple parameters
+a --add deploy "echo Deploying $1 to $2" --and "kubectl apply -f $1" --and "kubectl rollout status deployment/$1 -n $2"
+a deploy myapp production  # Expands all $1 and $2 throughout the chain
+```
+
+### Behavior Notes:
+
+- **With variables**: Arguments are substituted into the command template
+- **Without variables**: Arguments are appended to the final command (legacy behavior)
+- **Chain behavior**: If any command in a chain has parameter variables, arguments are available to all commands in the chain
+- **Out-of-bounds**: Using `$5` when only 3 arguments are provided results in empty string substitution
+- **Use `--which <alias>`**: To see how your parameters will be substituted with example values
 
 ## Installation
 
@@ -344,14 +400,122 @@ cargo build --release
 
 ## Architecture
 
-The tool uses a dispatcher pattern where:
-1. Management commands use the `--` prefix namespace
-2. Alias execution uses bare names
-3. All data is stored in a single JSON configuration file
-4. Cross-platform file paths are handled automatically
-5. ANSI color codes provide visual feedback
+### Design Pattern
 
-This design eliminates conflicts between management commands and user aliases while providing a clean, intuitive interface with enhanced visual feedback.
+The tool uses a **dispatcher pattern** with distinct namespaces:
+1. **Management commands**: Use the `--` prefix namespace (e.g., `--add`, `--list`, `--remove`)
+2. **Alias execution**: Use bare names (user-defined aliases)
+3. **Reserved names**: Protection against conflicts (no `--` prefix, `mgr:` substring, or `.` prefix)
+
+### Core Components
+
+**Data Structures:**
+- `CommandType::Simple`: Single command (backward compatibility)
+- `CommandType::Chain`: Complex command chains with conditional operators
+- `ChainOperator`: Defines execution conditions (And, Or, Always, IfCode)
+- `CommandChain`: Contains command sequences with optional parallel execution
+
+**Execution Engine:**
+- **Sequential mode**: Commands run one-by-one with conditional logic based on exit codes
+- **Parallel mode**: All commands run simultaneously using `std::thread` and `mpsc::channel`
+- **Smart argument handling**: Detects parameter variables and chooses appropriate argument passing strategy
+- **Exit code tracking**: Maintains state across chain execution for conditional branching
+
+**Configuration Management:**
+- Single JSON file: `~/.alias-mgr/config.json` (cross-platform)
+- Automatic serialization/deserialization with `serde`
+- **Legacy migration**: Automatically converts old format configs
+- **Atomic operations**: Safe concurrent access with proper file handling
+
+### Cross-Platform Features
+
+**Windows-Specific:**
+- **PATHEXT resolution**: Automatically resolves executables using Windows PATHEXT environment variable
+- **Extension inference**: Finds `.exe`, `.bat`, `.cmd`, `.com` files without explicit extension
+- **Path search**: Searches directories in PATH for executable files
+
+**Universal:**
+- **No shell dependency**: Commands executed directly via `std::process::Command`
+- **Security**: Eliminates shell injection vulnerabilities
+- **Consistent behavior**: Same execution semantics across all platforms
+- **Cross-platform paths**: Handles Windows (`%USERPROFILE%`) and Unix (`$HOME`) automatically
+
+### Testing Infrastructure
+
+- **Mock command runner**: Testable execution without running real commands
+- **Mock GitHub client**: Isolated testing of GitHub sync functionality
+- **Temporary file system**: Tests use `tempfile` crate for isolation
+- **Environment guards**: Safe parallel test execution with environment variable protection
+- **Comprehensive coverage**: Unit tests for all core functionality
+
+This architecture provides a clean separation of concerns, robust error handling, and consistent behavior across all supported platforms.
+
+## Dependencies
+
+The tool uses carefully selected Rust crates for specific functionality:
+
+- **`serde` & `serde_json`**: Configuration serialization/deserialization
+- **`chrono`**: Timestamp management for alias creation dates
+- **`ureq`**: Lightweight HTTP client for GitHub API interactions
+- **`base64`**: Content encoding for GitHub file uploads
+- **`shell-words`**: Proper shell-style command parsing (handles quotes, escaping)
+
+**Development Dependencies:**
+- **`tempfile`**: Isolated filesystem testing
+- **`assert_cmd`, `assert_fs`, `predicates`**: Integration testing utilities
+
+All dependencies are minimal and focused, avoiding heavy frameworks to maintain fast startup times and small binary size.
+
+## Key Implementation Details
+
+### Command Parsing
+
+The tool uses `shell-words` crate to parse command strings, which properly handles:
+- Quoted strings (single and double quotes)
+- Escaped characters
+- Whitespace handling
+- Cross-platform compatibility
+
+This ensures commands like `a --add test "echo \"hello world\""` work correctly.
+
+### Parameter Substitution Algorithm
+
+The parameter substitution engine:
+1. Scans command strings for `$` followed by special characters
+2. Supports multi-digit parameter indices (e.g., `$10`, `$11`)
+3. Handles escape sequences (`$$` → `$`)
+4. Processes `$@` and `$*` for all-arguments expansion
+5. Preserves non-variable `$` characters as literals
+
+### Windows Executable Resolution
+
+On Windows, the tool implements sophisticated executable resolution:
+1. Checks if program already has an extension
+2. Reads `PATHEXT` environment variable (defaults to `.COM;.EXE;.BAT;.CMD`)
+3. If path contains separators, searches in that directory first
+4. Otherwise, searches all PATH directories with all PATHEXT extensions
+5. Returns first match found
+
+This mimics Windows shell behavior, allowing `npm` to resolve to `npm.cmd` automatically.
+
+### GitHub Authentication Chain
+
+Authentication for `--push` and `--pull` tries multiple sources in order:
+1. Environment variables: `A_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
+2. GitHub CLI: Runs `gh auth status --show-token` or `gh auth token` (non-interactive)
+3. Git credentials: Queries `git credential fill` for stored tokens
+
+This flexible approach works in various development environments (local, CI/CD, containers) without requiring specific setup.
+
+### Thread-Safe Parallel Execution
+
+Parallel command execution uses:
+- **`Arc<dyn CommandRunner>`**: Shared command execution interface
+- **`mpsc::channel`**: Thread communication for result collection
+- **`thread::spawn`**: Separate threads for each command
+- **Graceful aggregation**: Collects all results before reporting success/failure
+
+This ensures safe concurrent execution with proper error handling.
 
 ## Version History
 
