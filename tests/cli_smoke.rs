@@ -266,3 +266,369 @@ fn export_without_config_reports_error() {
             "Source config file does not exist",
         ));
 }
+
+// Phase 1: Additional CLI tests for main function coverage
+
+#[test]
+fn add_alias_success() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "myalias", "echo hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added alias 'myalias'"));
+}
+
+#[test]
+fn add_alias_with_description() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "myalias", "echo test", "--desc", "Test description"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added alias"));
+}
+
+#[test]
+fn add_alias_missing_arguments() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "myalias"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"));
+}
+
+#[test]
+fn add_alias_missing_name_only() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.arg("--add")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"));
+}
+
+#[test]
+fn add_alias_with_reserved_name_double_dash() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "--test", "echo hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reserved"));
+}
+
+#[test]
+fn add_alias_with_reserved_name_mgr_prefix() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "mgr:test", "echo hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reserved"));
+}
+
+#[test]
+fn add_alias_with_reserved_name_dot_prefix() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", ".hidden", "echo hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reserved"));
+}
+
+#[test]
+fn add_chain_with_and_operator() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "test", "echo one", "--and", "echo two"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added alias"));
+}
+
+#[test]
+fn add_chain_with_or_operator() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "test", "echo one", "--or", "echo two"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added alias"));
+}
+
+#[test]
+fn add_chain_with_always_operator() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "test", "echo one", "--always", "echo two"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added alias"));
+}
+
+#[test]
+fn add_chain_with_if_code_operator() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "test", "echo one", "--if-code", "0", "echo two"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added alias"));
+}
+
+#[test]
+fn add_chain_with_parallel_flag() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args([
+        "--add",
+        "test",
+        "echo one",
+        "--and",
+        "echo two",
+        "--parallel",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Added alias"));
+}
+
+#[test]
+fn add_chain_if_code_missing_value() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "test", "echo one", "--if-code"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an exit code"));
+}
+
+#[test]
+fn add_chain_if_code_invalid_value() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "test", "echo one", "--if-code", "abc", "echo two"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("numeric exit code"));
+}
+
+#[test]
+fn add_chain_operator_missing_command() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "test", "echo one", "--and"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires a command"));
+}
+
+#[test]
+fn remove_alias_success() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    // First create an alias
+    let config = r#"{"aliases":{"test":{"command_type":{"Simple":"echo hello"},"description":null,"created":"2025-10-20"}}}"#;
+    fs::write(&config_path, config).expect("write config");
+
+    cmd.args(["--remove", "test"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed alias 'test'"));
+}
+
+#[test]
+fn remove_alias_not_found() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--remove", "nonexistent"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Alias 'nonexistent' not found"));
+}
+
+#[test]
+fn remove_alias_missing_name() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.arg("--remove")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"));
+}
+
+#[test]
+fn list_with_matching_filter() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"{
+  "aliases": {
+    "deploy": {
+      "command_type": { "Simple": "npm run deploy" },
+      "description": null,
+      "created": "2025-10-20"
+    },
+    "test": {
+      "command_type": { "Simple": "npm test" },
+      "description": null,
+      "created": "2025-10-20"
+    }
+  }
+}"#;
+    fs::write(&config_path, config).expect("write config");
+
+    cmd.args(["--list", "dep"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy"))
+        .stdout(predicate::str::contains("test").not());
+}
+
+#[test]
+fn which_alias_not_found() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--which", "nonexistent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alias 'nonexistent' not found"));
+}
+
+#[test]
+fn which_alias_missing_name() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.arg("--which")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"));
+}
+
+#[test]
+fn execute_alias_simple() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"{
+  "aliases": {
+    "greet": {
+      "command_type": { "Simple": "echo hello" },
+      "description": null,
+      "created": "2025-10-20"
+    }
+  }
+}"#;
+    fs::write(&config_path, config).expect("write config");
+
+    cmd.arg("greet").assert().success();
+}
+
+#[test]
+fn execute_alias_with_arguments() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"{
+  "aliases": {
+    "greet": {
+      "command_type": { "Simple": "echo" },
+      "description": null,
+      "created": "2025-10-20"
+    }
+  }
+}"#;
+    fs::write(&config_path, config).expect("write config");
+
+    cmd.args(["greet", "hello", "world"]).assert().success();
+}
+
+#[test]
+fn execute_alias_not_found() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Alias 'nonexistent' not found"));
+}
+
+// Note: --import command doesn't exist, removed these tests
+
+#[test]
+fn export_config_success() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"{"aliases":{"test":{"command_type":{"Simple":"echo test"},"description":null,"created":"2025-10-20"}}}"#;
+    fs::write(&config_path, config).expect("write config");
+
+    let export_dir = home.path().join("export_test");
+    cmd.args(["--export", export_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("exported"));
+
+    assert!(export_dir.join("config.json").exists());
+}
+
+#[test]
+fn help_with_invalid_option() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--help", "--invalid"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown option"));
+}
+
+#[test]
+fn push_with_multiple_message_parts() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+    fs::write(&config_path, r#"{"aliases":{}}"#).expect("write config");
+
+    // This will fail because "config" is treated as an extra argument
+    cmd.args(["--push", "--message", "Update", "config", "file"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown or unsupported option"));
+}
+
+#[test]
+fn push_with_message_missing_value() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+    fs::write(&config_path, r#"{"aliases":{}}"#).expect("write config");
+
+    // When --message has no value, it's treated as an unknown option
+    cmd.args(["--push", "--message"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown or unsupported option"));
+}
