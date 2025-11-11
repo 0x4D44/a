@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file (for libraries, usually gitignored; for binaries, usually committed)
+# Cargo.lock is typically committed for binary projects
+# Cargo.lock
+
+# Coverage reports
+lcov.info
+*.profraw
+*.profdata
+/target/llvm-cov/
+/target/tarpaulin/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug files
+*.dSYM/
