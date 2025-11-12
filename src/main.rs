@@ -3620,4 +3620,625 @@ mod tests {
         let calls = runner.calls();
         assert_eq!(calls.len(), 3);
     }
+
+    // Phase 2: Additional error handling and edge case tests
+
+    #[test]
+    fn test_execute_sequential_chain_with_various_exit_codes() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(2), Ok(0), Ok(127)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo second".to_string(),
+                    operator: Some(ChainOperator::IfCode(2)),
+                },
+                ChainCommand {
+                    command: "echo third".to_string(),
+                    operator: Some(ChainOperator::Always),
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3);
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_skips_on_or_operator() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo success".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo skipped".to_string(),
+                    operator: Some(ChainOperator::Or),
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "Second command should be skipped");
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_runs_on_or_after_failure() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(1), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo fail".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo recovery".to_string(),
+                    operator: Some(ChainOperator::Or),
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_skips_on_if_code_mismatch() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(5)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo skipped".to_string(),
+                    operator: Some(ChainOperator::IfCode(0)),
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn test_execute_parallel_chain_with_all_successes() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Ok(0), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo one".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo two".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo three".to_string(),
+                    operator: None,
+                },
+            ],
+            parallel: true,
+        };
+
+        let result = manager.execute_parallel_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3);
+    }
+
+    #[test]
+    fn test_command_type_display() {
+        let simple = AliasEntry {
+            command_type: CommandType::Simple("echo test".to_string()),
+            description: None,
+            created: "2025-01-01".to_string(),
+        };
+        assert_eq!(simple.command_display(), "echo test");
+
+        let chain = AliasEntry {
+            command_type: CommandType::Chain(CommandChain {
+                commands: vec![
+                    ChainCommand {
+                        command: "echo a".to_string(),
+                        operator: None,
+                    },
+                    ChainCommand {
+                        command: "echo b".to_string(),
+                        operator: Some(ChainOperator::And),
+                    },
+                ],
+                parallel: false,
+            }),
+            description: None,
+            created: "2025-01-01".to_string(),
+        };
+        let display = chain.command_display();
+        assert!(display.contains("echo a"));
+        assert!(display.contains("echo b"));
+    }
+
+    #[test]
+    fn test_list_aliases_with_empty_filter() {
+        let mut config = Config::new();
+        config.add_alias(
+            "test".to_string(),
+            CommandType::Simple("echo test".to_string()),
+            None,
+            false,
+        ).unwrap();
+
+        let aliases = config.list_aliases(Some(""));
+        assert_eq!(aliases.len(), 1);
+    }
+
+    #[test]
+    fn test_substitute_parameters_with_no_variables() {
+        let command = "echo hello world";
+        let args = vec!["arg1".to_string(), "arg2".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        assert_eq!(result, command);
+    }
+
+    #[test]
+    fn test_substitute_parameters_dollar_at() {
+        let command = "echo $@";
+        let args = vec!["one".to_string(), "two".to_string(), "three".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        assert_eq!(result, "echo one two three");
+    }
+
+    #[test]
+    fn test_substitute_parameters_dollar_star() {
+        let command = "echo $*";
+        let args = vec!["a".to_string(), "b".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        assert_eq!(result, "echo a b");
+    }
+
+    #[test]
+    fn test_substitute_parameters_mixed_dollar_signs() {
+        let command = "echo $1 $$ $2 $$3";
+        let args = vec!["first".to_string(), "second".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        assert_eq!(result, "echo first $ second $3");
+    }
+
+    #[test]
+    fn test_substitute_parameters_out_of_bounds() {
+        let command = "echo $1 $5 $2";
+        let args = vec!["a".to_string(), "b".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        // Out of bounds substitutes with empty string
+        assert_eq!(result, "echo a  b");
+    }
+
+    #[test]
+    fn test_substitute_parameters_empty_args() {
+        let command = "echo $1 $@";
+        let args: Vec<String> = vec![];
+        let result = AliasManager::substitute_parameters(command, &args);
+        // Empty args substitutes with empty string
+        assert_eq!(result, "echo  ");
+    }
+
+    #[test]
+    fn test_has_parameter_variables_dollar_at() {
+        assert!(AliasManager::has_parameter_variables("test $@"));
+    }
+
+    #[test]
+    fn test_has_parameter_variables_dollar_star() {
+        assert!(AliasManager::has_parameter_variables("test $*"));
+    }
+
+    #[test]
+    fn test_has_parameter_variables_none() {
+        assert!(!AliasManager::has_parameter_variables("test command"));
+        assert!(!AliasManager::has_parameter_variables("echo $$1"));
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_with_and_after_failure() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(1)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo fail".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo should_skip".to_string(),
+                    operator: Some(ChainOperator::And),
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "Second command should be skipped after failure");
+    }
+
+    #[test]
+    fn test_config_add_alias_with_force() {
+        let mut config = Config::new();
+        config.add_alias(
+            "test".to_string(),
+            CommandType::Simple("echo one".to_string()),
+            None,
+            false,
+        ).unwrap();
+
+        // Force overwrite
+        let result = config.add_alias(
+            "test".to_string(),
+            CommandType::Simple("echo two".to_string()),
+            Some("new description".to_string()),
+            true,
+        );
+        assert!(result.is_ok());
+
+        let alias = config.get_alias("test").unwrap();
+        if let CommandType::Simple(cmd) = &alias.command_type {
+            assert_eq!(cmd, "echo two");
+        }
+        assert_eq!(alias.description.as_deref(), Some("new description"));
+    }
+
+    #[test]
+    fn test_prepare_command_invocation_static_method() {
+        let result = AliasManager::prepare_command_invocation("echo test", &[]);
+        assert!(result.is_ok());
+        let (prog, args) = result.unwrap();
+        assert_eq!(prog, "echo");
+        assert_eq!(args, vec!["test"]);
+    }
+
+    #[test]
+    fn test_prepare_command_invocation_with_params() {
+        let extra_args = vec!["hello".to_string(), "world".to_string()];
+        let result = AliasManager::prepare_command_invocation("echo $1 $2", &extra_args);
+        assert!(result.is_ok());
+        let (prog, args) = result.unwrap();
+        assert_eq!(prog, "echo");
+        assert_eq!(args, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_prepare_command_invocation_empty_command() {
+        let result = AliasManager::prepare_command_invocation("", &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Empty command"));
+    }
+
+    #[test]
+    fn test_execute_alias_with_parameter_substitution() {
+        let (mut manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0)], Vec::new());
+
+        manager.config.add_alias(
+            "greet".to_string(),
+            CommandType::Simple("echo Hello $1".to_string()),
+            None,
+            false,
+        ).unwrap();
+
+        let args = vec!["World".to_string()];
+        let result = manager.execute_alias("greet", &args);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "echo");
+        assert_eq!(calls[0].1, vec!["Hello", "World"]);
+    }
+
+    // Phase 3: Additional edge case tests for maximum coverage
+
+    #[test]
+    fn test_github_response_from_status() {
+        let response = GitHubResponse::from_status(200);
+        assert_eq!(response.status(), 200);
+        assert!(response.json().is_none());
+        assert!(response.body().is_none());
+    }
+
+    #[test]
+    fn test_github_response_from_text() {
+        let response = GitHubResponse::from_text(404, "Not Found".to_string());
+        assert_eq!(response.status(), 404);
+        assert_eq!(response.body(), Some("Not Found"));
+    }
+
+    #[test]
+    fn test_github_response_from_json() {
+        let json = serde_json::json!({"key": "value"});
+        let response = GitHubResponse::from_json(201, json.clone());
+        assert_eq!(response.status(), 201);
+        assert_eq!(response.json(), Some(&json));
+    }
+
+    #[test]
+    fn test_chain_operator_serialization() {
+        let op1 = ChainOperator::And;
+        let serialized = serde_json::to_string(&op1).unwrap();
+        let deserialized: ChainOperator = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(deserialized, ChainOperator::And));
+
+        let op2 = ChainOperator::IfCode(5);
+        let serialized = serde_json::to_string(&op2).unwrap();
+        let deserialized: ChainOperator = serde_json::from_str(&serialized).unwrap();
+        if let ChainOperator::IfCode(code) = deserialized {
+            assert_eq!(code, 5);
+        } else {
+            panic!("Expected IfCode(5)");
+        }
+    }
+
+    #[test]
+    fn test_alias_entry_serialization() {
+        let entry = AliasEntry {
+            command_type: CommandType::Simple("test".to_string()),
+            description: Some("desc".to_string()),
+            created: "2025-01-01".to_string(),
+        };
+        let serialized = serde_json::to_string(&entry).unwrap();
+        let deserialized: AliasEntry = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.description.as_deref(), Some("desc"));
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_with_long_chain() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(
+                vec![Ok(0), Ok(0), Ok(0), Ok(0), Ok(0), Ok(0)],
+                Vec::new(),
+            );
+
+        let chain = CommandChain {
+            commands: (0..6)
+                .map(|i| ChainCommand {
+                    command: format!("echo {}", i),
+                    operator: if i == 0 {
+                        None
+                    } else {
+                        Some(ChainOperator::And)
+                    },
+                })
+                .collect(),
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 6);
+    }
+
+    #[test]
+    fn test_execute_parallel_chain_with_single_command() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![ChainCommand {
+                command: "echo test".to_string(),
+                operator: None,
+            }],
+            parallel: true,
+        };
+
+        let result = manager.execute_parallel_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn test_substitute_parameters_dollar_zero() {
+        let command = "echo $0 test";
+        let args = vec!["arg1".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        // $0 is out of bounds (1-indexed), substitutes with empty
+        assert_eq!(result, "echo  test");
+    }
+
+    #[test]
+    fn test_substitute_parameters_consecutive_dollars() {
+        let command = "$$$1";
+        let args = vec!["test".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        assert_eq!(result, "$test");
+    }
+
+    #[test]
+    fn test_substitute_parameters_dollar_at_end() {
+        let command = "test$";
+        let args = vec!["arg".to_string()];
+        let result = AliasManager::substitute_parameters(command, &args);
+        assert_eq!(result, "test$");
+    }
+
+    #[test]
+    fn test_has_parameter_variables_with_number() {
+        assert!(AliasManager::has_parameter_variables("echo $1"));
+        assert!(AliasManager::has_parameter_variables("echo $10"));
+        assert!(AliasManager::has_parameter_variables("echo $123"));
+    }
+
+    #[test]
+    fn test_config_remove_nonexistent() {
+        let mut config = Config::new();
+        let result = config.remove_alias("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_with_multiple_always() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(1), Ok(1), Ok(1)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo fail1".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo fail2".to_string(),
+                    operator: Some(ChainOperator::Always),
+                },
+                ChainCommand {
+                    command: "echo fail3".to_string(),
+                    operator: Some(ChainOperator::Always),
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3, "All commands should run with Always operator");
+    }
+
+    #[test]
+    fn test_execute_sequential_chain_with_multiple_if_codes() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(3), Ok(0), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                },
+                ChainCommand {
+                    command: "echo skip1".to_string(),
+                    operator: Some(ChainOperator::IfCode(0)),
+                },
+                ChainCommand {
+                    command: "echo run".to_string(),
+                    operator: Some(ChainOperator::IfCode(3)),
+                },
+                ChainCommand {
+                    command: "echo final".to_string(),
+                    operator: Some(ChainOperator::And),
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3, "Should run first, third (if-code match), and fourth");
+    }
+
+    #[test]
+    fn test_command_chain_display_with_parallel() {
+        let entry = AliasEntry {
+            command_type: CommandType::Chain(CommandChain {
+                commands: vec![
+                    ChainCommand {
+                        command: "echo a".to_string(),
+                        operator: None,
+                    },
+                    ChainCommand {
+                        command: "echo b".to_string(),
+                        operator: Some(ChainOperator::And),
+                    },
+                ],
+                parallel: true,
+            }),
+            description: None,
+            created: "2025-01-01".to_string(),
+        };
+
+        let display = entry.command_display();
+        assert!(display.contains("echo a"));
+        assert!(display.contains("echo b"));
+        assert!(display.contains("parallel") || display.contains("PARALLEL"));
+    }
+
+    #[test]
+    fn test_execute_alias_chain_with_arguments() {
+        let (mut manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Ok(0)], Vec::new());
+
+        manager
+            .config
+            .add_alias(
+                "test".to_string(),
+                CommandType::Chain(CommandChain {
+                    commands: vec![
+                        ChainCommand {
+                            command: "echo $1".to_string(),
+                            operator: None,
+                        },
+                        ChainCommand {
+                            command: "echo $2".to_string(),
+                            operator: Some(ChainOperator::And),
+                        },
+                    ],
+                    parallel: false,
+                }),
+                None,
+                false,
+            )
+            .unwrap();
+
+        let args = vec!["hello".to_string(), "world".to_string()];
+        let result = manager.execute_alias("test", &args);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, vec!["hello"]);
+        assert_eq!(calls[1].1, vec!["world"]);
+    }
 }
