@@ -1,4 +1,4 @@
-# Alias Manager (`a`) v1.4.0
+# Alias Manager (`a`) v1.5.0
 
 A cross-platform command alias management tool written in Rust. Provides a powerful and intuitive way to create, manage, and execute command aliases with advanced features like command chaining, parallel execution, conditional logic, and parameter substitution that work seamlessly across Windows, Linux, and macOS.
 
@@ -518,6 +518,9 @@ Parallel command execution uses:
 This ensures safe concurrent execution with proper error handling.
 
 ## Version History
+
+- **v1.5.0**:
+  - Fix code formatting and clippy lints for CI compliance
 
 - **v1.4.0**:
   - Enhance GitHub auth: support gh CLI and git credential helper in addition to env vars

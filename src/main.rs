@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-const VERSION: &str = "1.4.0";
+const VERSION: &str = "1.5.0";
 // Hardcoded GitHub target for config sync
 const GITHUB_REPO: &str = "0x4d44/a"; // owner/repo
 const GITHUB_BRANCH: &str = "main";
@@ -271,7 +271,7 @@ impl GitHubClient for UreqGitHubClient {
             }
             Err(ureq::Error::Status(status, resp)) => {
                 let text = resp.into_string().unwrap_or_default();
-                Ok(GitHubResponse::from_text(status as u16, text))
+                Ok(GitHubResponse::from_text(status, text))
             }
             Err(e) => Err(format!("Failed to perform GitHub GET: {}", e)),
         }
@@ -296,7 +296,7 @@ impl GitHubClient for UreqGitHubClient {
             }
             Err(ureq::Error::Status(status, resp)) => {
                 let text = resp.into_string().unwrap_or_default();
-                Ok(GitHubResponse::from_text(status as u16, text))
+                Ok(GitHubResponse::from_text(status, text))
             }
             Err(e) => Err(format!("Failed to perform GitHub PUT: {}", e)),
         }
@@ -410,7 +410,7 @@ impl AliasManager {
         let config_path = Self::get_config_path()?;
         let config = Self::load_config(&config_path)?;
 
-        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(UreqGitHubClient::default());
 
         Ok(Self::with_dependencies(config, config_path, runner, github))
@@ -3147,7 +3147,7 @@ mod tests {
         let config_path = temp_dir.path().join("config.json");
         fs::write(&config_path, r#"{"aliases":{}}"#).unwrap();
 
-        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
         let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
 
@@ -3206,7 +3206,7 @@ mod tests {
         let _path_guard = EnvVarGuard::set("PATH", new_path);
         let _pathext_guard = EnvVarGuard::set("PATHEXT", "");
 
-        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
         let mut manager =
             AliasManager::with_dependencies(Config::new(), config_path, runner, github);
@@ -3251,7 +3251,7 @@ mod tests {
         let _path_guard = EnvVarGuard::set("PATH", new_path);
         let _pathext_guard = EnvVarGuard::set("PATHEXT", ".CMD");
 
-        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
         let mut manager =
             AliasManager::with_dependencies(Config::new(), config_path, runner, github);
@@ -3277,7 +3277,7 @@ mod tests {
         let config_path = temp_dir.path().join("config.json");
         fs::write(&config_path, r#"{"aliases":{}}"#).unwrap();
 
-        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner::default());
+        let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
         let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
 
@@ -3795,12 +3795,14 @@ mod tests {
     #[test]
     fn test_list_aliases_with_empty_filter() {
         let mut config = Config::new();
-        config.add_alias(
-            "test".to_string(),
-            CommandType::Simple("echo test".to_string()),
-            None,
-            false,
-        ).unwrap();
+        config
+            .add_alias(
+                "test".to_string(),
+                CommandType::Simple("echo test".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
 
         let aliases = config.list_aliases(Some(""));
         assert_eq!(aliases.len(), 1);
@@ -3895,18 +3897,24 @@ mod tests {
         assert!(result.is_ok());
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 1, "Second command should be skipped after failure");
+        assert_eq!(
+            calls.len(),
+            1,
+            "Second command should be skipped after failure"
+        );
     }
 
     #[test]
     fn test_config_add_alias_with_force() {
         let mut config = Config::new();
-        config.add_alias(
-            "test".to_string(),
-            CommandType::Simple("echo one".to_string()),
-            None,
-            false,
-        ).unwrap();
+        config
+            .add_alias(
+                "test".to_string(),
+                CommandType::Simple("echo one".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
 
         // Force overwrite
         let result = config.add_alias(
@@ -3955,12 +3963,15 @@ mod tests {
         let (mut manager, _temp_dir, runner, _github) =
             create_manager_with_mocks(vec![Ok(0)], Vec::new());
 
-        manager.config.add_alias(
-            "greet".to_string(),
-            CommandType::Simple("echo Hello $1".to_string()),
-            None,
-            false,
-        ).unwrap();
+        manager
+            .config
+            .add_alias(
+                "greet".to_string(),
+                CommandType::Simple("echo Hello $1".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
 
         let args = vec!["World".to_string()];
         let result = manager.execute_alias("greet", &args);
@@ -4029,10 +4040,7 @@ mod tests {
     #[test]
     fn test_execute_sequential_chain_with_long_chain() {
         let (manager, _temp_dir, runner, _github) =
-            create_manager_with_mocks(
-                vec![Ok(0), Ok(0), Ok(0), Ok(0), Ok(0), Ok(0)],
-                Vec::new(),
-            );
+            create_manager_with_mocks(vec![Ok(0), Ok(0), Ok(0), Ok(0), Ok(0), Ok(0)], Vec::new());
 
         let chain = CommandChain {
             commands: (0..6)
@@ -4142,7 +4150,11 @@ mod tests {
         assert!(result.is_ok());
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 3, "All commands should run with Always operator");
+        assert_eq!(
+            calls.len(),
+            3,
+            "All commands should run with Always operator"
+        );
     }
 
     #[test]
@@ -4176,7 +4188,11 @@ mod tests {
         assert!(result.is_ok());
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 3, "Should run first, third (if-code match), and fourth");
+        assert_eq!(
+            calls.len(),
+            3,
+            "Should run first, third (if-code match), and fourth"
+        );
     }
 
     #[test]

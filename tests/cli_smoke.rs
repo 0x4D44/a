@@ -285,10 +285,16 @@ fn add_alias_with_description() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "myalias", "echo test", "--desc", "Test description"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Added alias"));
+    cmd.args([
+        "--add",
+        "myalias",
+        "echo test",
+        "--desc",
+        "Test description",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Added alias"));
 }
 
 #[test]
