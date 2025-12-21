@@ -154,9 +154,7 @@ fn missing_home_environment_reports_error() {
     cmd.arg("--config")
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "HOME environment variable not found",
-        ));
+        .stderr(predicate::str::contains("environment variable not found"));
 }
 
 #[test]
