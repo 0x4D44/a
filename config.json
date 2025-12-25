@@ -1,19 +1,5 @@
 {
   "aliases": {
-    "mddl": {
-      "command_type": {
-        "Simple": "mdcode diff . L"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "cl": {
-      "command_type": {
-        "Simple": "claude --permission-mode bypassPermissions"
-      },
-      "description": null,
-      "created": "2025-10-25"
-    },
     "mddr": {
       "command_type": {
         "Simple": "mdcode diff . 0 1"
@@ -21,16 +7,126 @@
       "description": null,
       "created": "2025-06-23"
     },
-    "al": {
+    "mdf": {
       "command_type": {
-        "Simple": "a --list"
+        "Simple": "mdcode gh_fetch ."
       },
       "description": null,
       "created": "2025-06-23"
     },
+    "gc": {
+      "command_type": {
+        "Simple": "git clone https://github.com/0x4D44/$1"
+      },
+      "description": null,
+      "created": "2025-10-20"
+    },
+    "clv": {
+      "command_type": {
+        "Simple": "cargo llvm-cov"
+      },
+      "description": null,
+      "created": "2025-12-19"
+    },
+    "ge": {
+      "command_type": {
+        "Simple": "gemini -y"
+      },
+      "description": null,
+      "created": "2025-12-09"
+    },
+    "dir": {
+      "command_type": {
+        "Simple": "dir /b"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mdt": {
+      "command_type": {
+        "Simple": "mdcode tag ."
+      },
+      "description": null,
+      "created": "2025-09-07"
+    },
     "mdp": {
       "command_type": {
         "Simple": "mdcode gh_push ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "tagp": {
+      "command_type": {
+        "Chain": {
+          "commands": [
+            {
+              "command": "git tag $1",
+              "operator": null
+            },
+            {
+              "command": "git push origin $1",
+              "operator": "And"
+            }
+          ],
+          "parallel": false
+        }
+      },
+      "description": null,
+      "created": "2025-09-04"
+    },
+    "co": {
+      "command_type": {
+        "Simple": "codex --dangerously-bypass-approvals-and-sandbox"
+      },
+      "description": null,
+      "created": "2025-11-18"
+    },
+    "clp": {
+      "command_type": {
+        "Simple": "npm update -g @anthropic-ai/claude-code"
+      },
+      "description": null,
+      "created": "2025-12-23"
+    },
+    "ls": {
+      "command_type": {
+        "Simple": "ls -la"
+      },
+      "description": "List files with details",
+      "created": "2025-06-23"
+    },
+    "mdu": {
+      "command_type": {
+        "Simple": "mdcode update ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "gst": {
+      "command_type": {
+        "Simple": "git status --porcelain"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mytest": {
+      "command_type": {
+        "Simple": "echo hello world"
+      },
+      "description": "Test command",
+      "created": "2025-06-23"
+    },
+    "kl": {
+      "command_type": {
+        "Simple": "mdkloc"
+      },
+      "description": null,
+      "created": "2025-08-25"
+    },
+    "mdi": {
+      "command_type": {
+        "Simple": "mdcode info ."
       },
       "description": null,
       "created": "2025-06-23"
@@ -61,52 +157,26 @@
       "description": null,
       "created": "2025-11-10"
     },
-    "gst": {
+    "mddl": {
       "command_type": {
-        "Simple": "git status --porcelain"
+        "Simple": "mdcode diff . L"
       },
       "description": null,
       "created": "2025-06-23"
     },
-    "mytest": {
+    "al": {
       "command_type": {
-        "Simple": "echo hello world"
+        "Simple": "a --list"
       },
-      "description": "Test command",
+      "description": null,
       "created": "2025-06-23"
     },
-    "clv": {
+    "cl": {
       "command_type": {
-        "Simple": "cargo llvm-cov"
+        "Simple": "claude --permission-mode bypassPermissions"
       },
       "description": null,
-      "created": "2025-12-19"
-    },
-    "kl": {
-      "command_type": {
-        "Simple": "mdkloc"
-      },
-      "description": null,
-      "created": "2025-08-25"
-    },
-    "tagp": {
-      "command_type": {
-        "Chain": {
-          "commands": [
-            {
-              "command": "git tag $1",
-              "operator": null
-            },
-            {
-              "command": "git push origin $1",
-              "operator": "And"
-            }
-          ],
-          "parallel": false
-        }
-      },
-      "description": null,
-      "created": "2025-09-04"
+      "created": "2025-10-25"
     },
     "gp": {
       "command_type": {
@@ -115,54 +185,12 @@
       "description": null,
       "created": "2025-11-09"
     },
-    "ls": {
-      "command_type": {
-        "Simple": "ls -la"
-      },
-      "description": "List files with details",
-      "created": "2025-06-23"
-    },
-    "clp": {
-      "command_type": {
-        "Simple": "npm update -g @anthropic-ai/claude-code"
-      },
-      "description": null,
-      "created": "2025-12-23"
-    },
-    "mdf": {
-      "command_type": {
-        "Simple": "mdcode gh_fetch ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "ge": {
-      "command_type": {
-        "Simple": "gemini -y"
-      },
-      "description": null,
-      "created": "2025-12-09"
-    },
     "cbt": {
       "command_type": {
         "Simple": "cargo test"
       },
       "description": null,
       "created": "2025-06-23"
-    },
-    "mdu": {
-      "command_type": {
-        "Simple": "mdcode update ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "gc": {
-      "command_type": {
-        "Simple": "git clone https://github.com/0x4D44/$1"
-      },
-      "description": null,
-      "created": "2025-10-20"
     },
     "cbr": {
       "command_type": {
@@ -181,32 +209,18 @@
             },
             {
               "command": "npm install -g @openai/codex@latest",
-              "operator": "And"
+              "operator": "Always"
             },
             {
               "command": "codex --version",
-              "operator": "And"
+              "operator": "Always"
             }
           ],
           "parallel": false
         }
       },
       "description": null,
-      "created": "2025-10-30"
-    },
-    "mdi": {
-      "command_type": {
-        "Simple": "mdcode info ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "mdt": {
-      "command_type": {
-        "Simple": "mdcode tag ."
-      },
-      "description": null,
-      "created": "2025-09-07"
+      "created": "2025-12-25"
     },
     "mds": {
       "command_type": {
@@ -214,20 +228,6 @@
       },
       "description": null,
       "created": "2025-06-23"
-    },
-    "dir": {
-      "command_type": {
-        "Simple": "dir /b"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "co": {
-      "command_type": {
-        "Simple": "codex --dangerously-bypass-approvals-and-sandbox"
-      },
-      "description": null,
-      "created": "2025-11-18"
     }
   }
 }
