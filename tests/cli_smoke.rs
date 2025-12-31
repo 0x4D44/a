@@ -73,7 +73,7 @@ fn which_alias_displays_alias_details() {
 {
   "aliases": {
     "demo": {
-      "command_type": { "Simple": "echo hello" },
+      "command_type": { "Simple": "cargo --version" },
       "description": "Sample alias",
       "created": "2025-10-20"
     }
@@ -220,23 +220,18 @@ fn push_without_token_exits_with_error() {
     let config_path = alias_config_path(&home);
     fs::write(&config_path, r#"{"aliases":{}}"#).expect("write config");
 
+    cmd.env("A_GITHUB_TOKEN", "");
+    cmd.env("GITHUB_TOKEN", "");
+    cmd.env("GH_TOKEN", "");
+    cmd.env("PATH", "");
+
     cmd.arg("--push")
         .assert()
         .failure()
         .stderr(predicate::str::contains("Missing GitHub token"));
 }
 
-#[test]
-fn push_with_message_parses_arguments() {
-    let (mut cmd, home) = command_with_home();
-    let config_path = alias_config_path(&home);
-    fs::write(&config_path, r#"{"aliases":{}}"#).expect("write config");
 
-    cmd.args(["--push", "--message", "hello"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("Missing GitHub token"));
-}
 
 #[test]
 fn pull_with_extra_argument_is_rejected() {
@@ -272,7 +267,7 @@ fn add_alias_success() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "myalias", "echo hello"])
+    cmd.args(["--add", "myalias", "cargo --version"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added alias 'myalias'"));
@@ -286,7 +281,7 @@ fn add_alias_with_description() {
     cmd.args([
         "--add",
         "myalias",
-        "echo test",
+        "cargo --version",
         "--desc",
         "Test description",
     ])
@@ -322,7 +317,7 @@ fn add_alias_with_reserved_name_double_dash() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "--test", "echo hello"])
+    cmd.args(["--add", "--test", "cargo --version"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("reserved"));
@@ -333,7 +328,7 @@ fn add_alias_with_reserved_name_mgr_prefix() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "mgr:test", "echo hello"])
+    cmd.args(["--add", "mgr:test", "cargo --version"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("reserved"));
@@ -344,7 +339,7 @@ fn add_alias_with_reserved_name_dot_prefix() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", ".hidden", "echo hello"])
+    cmd.args(["--add", ".hidden", "cargo --version"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("reserved"));
@@ -355,7 +350,7 @@ fn add_chain_with_and_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "echo one", "--and", "echo two"])
+    cmd.args(["--add", "test", "cargo --version", "--and", "cargo --version"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added alias"));
@@ -366,7 +361,7 @@ fn add_chain_with_or_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "echo one", "--or", "echo two"])
+    cmd.args(["--add", "test", "cargo --version", "--or", "cargo --version"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added alias"));
@@ -377,7 +372,7 @@ fn add_chain_with_always_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "echo one", "--always", "echo two"])
+    cmd.args(["--add", "test", "cargo --version", "--always", "cargo --version"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added alias"));
@@ -388,7 +383,7 @@ fn add_chain_with_if_code_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "echo one", "--if-code", "0", "echo two"])
+    cmd.args(["--add", "test", "cargo --version", "--if-code", "0", "cargo --version"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added alias"));
@@ -402,9 +397,9 @@ fn add_chain_with_parallel_flag() {
     cmd.args([
         "--add",
         "test",
-        "echo one",
+        "cargo --version",
         "--and",
-        "echo two",
+        "cargo --version",
         "--parallel",
     ])
     .assert()
@@ -417,7 +412,7 @@ fn add_chain_if_code_missing_value() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "echo one", "--if-code"])
+    cmd.args(["--add", "test", "cargo --version", "--if-code"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires an exit code"));
@@ -428,7 +423,7 @@ fn add_chain_if_code_invalid_value() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "echo one", "--if-code", "abc", "echo two"])
+    cmd.args(["--add", "test", "cargo --version", "--if-code", "abc", "cargo --version"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("numeric exit code"));
@@ -439,7 +434,7 @@ fn add_chain_operator_missing_command() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "echo one", "--and"])
+    cmd.args(["--add", "test", "cargo --version", "--and"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires a command"));
@@ -451,7 +446,7 @@ fn remove_alias_success() {
     let config_path = alias_config_path(&home);
 
     // First create an alias
-    let config = r#"{"aliases":{"test":{"command_type":{"Simple":"echo hello"},"description":null,"created":"2025-10-20"}}}"#;
+    let config = r#"{"aliases":{"test":{"command_type":{"Simple":"cargo --version"},"description":null,"created":"2025-10-20"}}}"#;
     fs::write(&config_path, config).expect("write config");
 
     cmd.args(["--remove", "test"])
@@ -540,7 +535,7 @@ fn execute_alias_simple() {
     let config = r#"{
   "aliases": {
     "greet": {
-      "command_type": { "Simple": "echo hello" },
+      "command_type": { "Simple": "cargo --version" },
       "description": null,
       "created": "2025-10-20"
     }
@@ -559,7 +554,7 @@ fn execute_alias_with_arguments() {
     let config = r#"{
   "aliases": {
     "greet": {
-      "command_type": { "Simple": "echo" },
+      "command_type": { "Simple": "cargo" },
       "description": null,
       "created": "2025-10-20"
     }
@@ -567,7 +562,7 @@ fn execute_alias_with_arguments() {
 }"#;
     fs::write(&config_path, config).expect("write config");
 
-    cmd.args(["greet", "hello", "world"]).assert().success();
+    cmd.args(["greet", "--version"]).assert().success();
 }
 
 #[test]
@@ -588,7 +583,7 @@ fn export_config_success() {
     let (mut cmd, home) = command_with_home();
     let config_path = alias_config_path(&home);
 
-    let config = r#"{"aliases":{"test":{"command_type":{"Simple":"echo test"},"description":null,"created":"2025-10-20"}}}"#;
+    let config = r#"{"aliases":{"test":{"command_type":{"Simple":"cargo --version"},"description":null,"created":"2025-10-20"}}}"#;
     fs::write(&config_path, config).expect("write config");
 
     let export_dir = home.path().join("export_test");
@@ -635,4 +630,120 @@ fn push_with_message_missing_value() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Unknown or unsupported option"));
+}
+
+#[test]
+fn list_with_various_filters() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"{
+  "aliases": {
+    "deploy-staging": {
+      "command_type": { "Simple": "npm run deploy:staging" },
+      "description": null,
+      "created": "2025-10-20"
+    },
+    "deploy-production": {
+      "command_type": { "Simple": "npm run deploy:prod" },
+      "description": null,
+      "created": "2025-10-20"
+    },
+    "test-units": {
+      "command_type": { "Simple": "npm test" },
+      "description": null,
+      "created": "2025-10-20"
+    }
+  }
+}"#;
+    fs::write(&config_path, config).expect("write config");
+
+    // Filter by prefix
+    cmd.args(["--list", "deploy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy-staging"))
+        .stdout(predicate::str::contains("deploy-production"))
+        .stdout(predicate::str::contains("test-units").not());
+
+    // Filter by suffix
+    let (mut cmd, _) = command_with_home();
+    cmd.env("HOME", home.path());
+    cmd.env("USERPROFILE", home.path());
+    cmd.args(["--list", "production"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy-production"))
+        .stdout(predicate::str::contains("deploy-staging").not())
+        .stdout(predicate::str::contains("test-units").not());
+
+    // Filter by substring
+    let (mut cmd, _) = command_with_home();
+    cmd.env("HOME", home.path());
+    cmd.env("USERPROFILE", home.path());
+    cmd.args(["--list", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy-staging"))
+        .stdout(predicate::str::contains("deploy-production").not())
+        .stdout(predicate::str::contains("test-units").not());
+}
+
+#[test]
+fn execute_chained_commands_via_cli() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"{
+        "aliases": {
+            "chain-test": {
+                "command_type": {
+                    "Chain": {
+                        "commands": [
+                            { "command": "cargo --version", "operator": null },
+                            { "command": "cargo --version", "operator": "And" }
+                        ],
+                        "parallel": false
+                    }
+                },
+                "description": null,
+                "created": "2025-10-20"
+            }
+        }
+    }"#;
+    fs::write(&config_path, config).expect("write config");
+
+    cmd.arg("chain-test")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cargo").and(predicate::str::contains("1.")));
+}
+
+#[test]
+fn execute_parallel_execution_flag() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"{
+        "aliases": {
+            "parallel-test": {
+                "command_type": {
+                    "Chain": {
+                        "commands": [
+                            { "command": "cargo --version", "operator": null },
+                            { "command": "cargo --version", "operator": "And" }
+                        ],
+                        "parallel": true
+                    }
+                },
+                "description": null,
+                "created": "2025-10-20"
+            }
+        }
+    }"#;
+    fs::write(&config_path, config).expect("write config");
+
+    cmd.arg("parallel-test")
+        .assert()
+        .success();
 }

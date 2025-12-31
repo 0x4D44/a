@@ -2261,13 +2261,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
             for response in responses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-                let mut buffer = [0u8; 4096];
-                let _ = stream.read(&mut buffer);
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("send stub response");
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                    let mut buffer = [0u8; 4096];
+                    let _ = stream.read(&mut buffer);
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("send stub response");
+                    // Give client time to read before the listener drops
+                    thread::sleep(Duration::from_millis(100));
+                }
             }
         });
         (format!("http://{}", addr), handle)
