@@ -231,8 +231,6 @@ fn push_without_token_exits_with_error() {
         .stderr(predicate::str::contains("Missing GitHub token"));
 }
 
-
-
 #[test]
 fn pull_with_extra_argument_is_rejected() {
     let (mut cmd, home) = command_with_home();
@@ -350,10 +348,16 @@ fn add_chain_with_and_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "cargo --version", "--and", "cargo --version"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Added alias"));
+    cmd.args([
+        "--add",
+        "test",
+        "cargo --version",
+        "--and",
+        "cargo --version",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Added alias"));
 }
 
 #[test]
@@ -361,10 +365,16 @@ fn add_chain_with_or_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "cargo --version", "--or", "cargo --version"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Added alias"));
+    cmd.args([
+        "--add",
+        "test",
+        "cargo --version",
+        "--or",
+        "cargo --version",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Added alias"));
 }
 
 #[test]
@@ -372,10 +382,16 @@ fn add_chain_with_always_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "cargo --version", "--always", "cargo --version"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Added alias"));
+    cmd.args([
+        "--add",
+        "test",
+        "cargo --version",
+        "--always",
+        "cargo --version",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Added alias"));
 }
 
 #[test]
@@ -383,10 +399,17 @@ fn add_chain_with_if_code_operator() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "cargo --version", "--if-code", "0", "cargo --version"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Added alias"));
+    cmd.args([
+        "--add",
+        "test",
+        "cargo --version",
+        "--if-code",
+        "0",
+        "cargo --version",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Added alias"));
 }
 
 #[test]
@@ -423,10 +446,17 @@ fn add_chain_if_code_invalid_value() {
     let (mut cmd, home) = command_with_home();
     let _ = alias_config_path(&home);
 
-    cmd.args(["--add", "test", "cargo --version", "--if-code", "abc", "cargo --version"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("numeric exit code"));
+    cmd.args([
+        "--add",
+        "test",
+        "cargo --version",
+        "--if-code",
+        "abc",
+        "cargo --version",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("numeric exit code"));
 }
 
 #[test]
@@ -743,7 +773,5 @@ fn execute_parallel_execution_flag() {
     }"#;
     fs::write(&config_path, config).expect("write config");
 
-    cmd.arg("parallel-test")
-        .assert()
-        .success();
+    cmd.arg("parallel-test").assert().success();
 }
