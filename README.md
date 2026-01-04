@@ -295,6 +295,12 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
+**WSL Note:** On WSL with Windows Git credential helper configured, set `GIT_TERMINAL_PROMPT=0` to prevent interactive prompts during tests that check GitHub auth behavior:
+
+```bash
+export GIT_TERMINAL_PROMPT=0  # add to ~/.bashrc for persistence
+```
+
 To inspect coverage:
 
 ```bash
