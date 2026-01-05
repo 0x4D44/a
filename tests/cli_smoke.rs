@@ -775,3 +775,107 @@ fn execute_parallel_execution_flag() {
 
     cmd.arg("parallel-test").assert().success();
 }
+
+#[test]
+fn push_with_unknown_flag() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+    fs::write(&config_path, r#"{"aliases":{}}"#).expect("write config");
+
+    cmd.args(["--push", "--unknown"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown or unsupported option"));
+}
+
+#[test]
+fn help_with_no_examples() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--help", "--no-examples"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("📖 EXAMPLES:").not());
+}
+
+#[test]
+fn add_alias_unknown_flag() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "name", "cmd", "--unknown"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown option"));
+}
+
+#[test]
+fn add_alias_desc_missing_value() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "name", "cmd", "--desc"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--desc requires a description"));
+}
+
+#[test]
+fn add_chain_or_missing_command() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "name", "cmd", "--or"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--or requires a command"));
+}
+
+#[test]
+fn add_chain_always_missing_command() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    cmd.args(["--add", "name", "cmd", "--always"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--always requires a command"));
+}
+
+#[test]
+fn which_simple_alias_with_params() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+
+    let config = r#"
+{
+  "aliases": {
+    "greet": {
+      "command_type": { "Simple": "echo Hello $1" },
+      "description": "Greeting",
+      "created": "2025-10-20"
+    }
+  }
+}
+"#;
+    fs::write(&config_path, config).expect("write config");
+
+    cmd.args(["--which", "greet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Parameter substitution example"))
+        .stdout(predicate::str::contains("Resolves to:"));
+}
+
+#[test]
+fn list_no_aliases() {
+    let (mut cmd, home) = command_with_home();
+    let config_path = alias_config_path(&home);
+    fs::write(&config_path, r#"{"aliases":{}}"#).expect("write config");
+
+    cmd.arg("--list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No aliases configured"));
+}

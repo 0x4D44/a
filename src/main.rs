@@ -398,11 +398,199 @@ impl Config {
     }
 }
 
+trait OutputCommandRunner: Send + Sync {
+    fn run_capture(
+        &self,
+        program: &str,
+        args: &[String],
+        envs: &HashMap<String, String>,
+        stdin: Option<&str>,
+    ) -> io::Result<std::process::Output>;
+}
+
+struct SystemOutputCommandRunner;
+
+impl OutputCommandRunner for SystemOutputCommandRunner {
+    fn run_capture(
+        &self,
+        program: &str,
+        args: &[String],
+        envs: &HashMap<String, String>,
+        stdin: Option<&str>,
+    ) -> io::Result<std::process::Output> {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+
+        cmd.stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::null());
+
+        let mut child = cmd.spawn()?;
+
+        if let Some(input) = stdin {
+            if let Some(mut child_stdin) = child.stdin.take() {
+                child_stdin.write_all(input.as_bytes())?;
+            }
+        }
+
+        child.wait_with_output()
+    }
+}
+
+trait TokenProvider: Send + Sync {
+    fn get_token(&self) -> Option<String>;
+}
+
+struct SystemTokenProvider {
+    runner: Arc<dyn OutputCommandRunner + Send + Sync>,
+}
+
+impl SystemTokenProvider {
+    fn new() -> Self {
+        Self {
+            runner: Arc::new(SystemOutputCommandRunner),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_runner(runner: Arc<dyn OutputCommandRunner + Send + Sync>) -> Self {
+        Self { runner }
+    }
+}
+
+impl TokenProvider for SystemTokenProvider {
+    fn get_token(&self) -> Option<String> {
+        // 1) Environment variables
+        if let Ok(tok) = env::var("A_GITHUB_TOKEN") {
+            if !tok.trim().is_empty() {
+                return Some(tok);
+            }
+        }
+        if let Ok(tok) = env::var("GITHUB_TOKEN") {
+            if !tok.trim().is_empty() {
+                return Some(tok);
+            }
+        }
+        if let Ok(tok) = env::var("GH_TOKEN") {
+            if !tok.trim().is_empty() {
+                return Some(tok);
+            }
+        }
+
+        // 2) GitHub CLI (gh) – try status first (non-interactive), then token
+        if let Some(tok) = self.github_token_from_gh_status() {
+            return Some(tok);
+        }
+        if let Some(tok) = self.github_token_from_gh_token() {
+            return Some(tok);
+        }
+
+        // 3) Git credential helper (may have PAT stored as the password)
+        if let Some(tok) = self.github_token_from_git_credentials("github.com") {
+            return Some(tok);
+        }
+        if let Some(tok) = self.github_token_from_git_credentials("api.github.com") {
+            return Some(tok);
+        }
+
+        None
+    }
+}
+
+impl SystemTokenProvider {
+    fn github_token_from_gh_status(&self) -> Option<String> {
+        let args = vec![
+            "auth".to_string(),
+            "status".to_string(),
+            "--show-token".to_string(),
+        ];
+        let mut envs = HashMap::new();
+        envs.insert("GH_PROMPT_DISABLED".to_string(), "1".to_string());
+
+        let output = match self.runner.run_capture("gh", &args, &envs, None) {
+            Ok(o) => o,
+            Err(_) => return None,
+        };
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Look for a line like: "Token: ghp_..."
+        for line in stdout.lines() {
+            if let Some(idx) = line.find("Token:") {
+                let token_part = line[idx + "Token:".len()..].trim();
+                if !token_part.is_empty() && token_part != "<TOKEN>" {
+                    return Some(token_part.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn github_token_from_gh_token(&self) -> Option<String> {
+        let args = vec!["auth".to_string(), "token".to_string()];
+        let mut envs = HashMap::new();
+        envs.insert("GH_PROMPT_DISABLED".to_string(), "1".to_string());
+
+        let output = match self.runner.run_capture("gh", &args, &envs, None) {
+            Ok(o) => o,
+            Err(_) => return None,
+        };
+        if !output.status.success() {
+            return None;
+        }
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            None
+        } else {
+            Some(token)
+        }
+    }
+
+    fn github_token_from_git_credentials(&self, host: &str) -> Option<String> {
+        let args = vec!["credential".to_string(), "fill".to_string()];
+        let input = format!("protocol=https\nhost={}\n\n", host);
+
+        let output = match self
+            .runner
+            .run_capture("git", &args, &HashMap::new(), Some(&input))
+        {
+            Ok(o) => o,
+            Err(_) => return None,
+        };
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Parse key=value lines; prefer password as token
+        let mut password: Option<String> = None;
+        for line in stdout.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                if k == "password" && !v.trim().is_empty() {
+                    password = Some(v.trim().to_string());
+                    break;
+                }
+            }
+        }
+        password
+    }
+}
+
 struct AliasManager {
     config: Config,
     config_path: PathBuf,
     command_runner: Arc<dyn CommandRunner + Send + Sync>,
     github_client: Arc<dyn GitHubClient + Send + Sync>,
+    token_provider: Arc<dyn TokenProvider + Send + Sync>,
 }
 
 impl AliasManager {
@@ -412,8 +600,16 @@ impl AliasManager {
 
         let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(UreqGitHubClient::default());
+        let token_provider: Arc<dyn TokenProvider + Send + Sync> =
+            Arc::new(SystemTokenProvider::new());
 
-        Ok(Self::with_dependencies(config, config_path, runner, github))
+        Ok(Self::with_dependencies(
+            config,
+            config_path,
+            runner,
+            github,
+            token_provider,
+        ))
     }
 
     fn with_dependencies(
@@ -421,12 +617,14 @@ impl AliasManager {
         config_path: PathBuf,
         command_runner: Arc<dyn CommandRunner + Send + Sync>,
         github_client: Arc<dyn GitHubClient + Send + Sync>,
+        token_provider: Arc<dyn TokenProvider + Send + Sync>,
     ) -> Self {
         AliasManager {
             config,
             config_path,
             command_runner,
             github_client,
+            token_provider,
         }
     }
 
@@ -514,144 +712,13 @@ impl AliasManager {
             .map_err(|e| format!("Failed to save config file: {}", e))
     }
 
-    fn github_token() -> Option<String> {
-        // 1) Environment variables
-        if let Ok(tok) = env::var("A_GITHUB_TOKEN") {
-            if !tok.trim().is_empty() {
-                return Some(tok);
-            }
-        }
-        if let Ok(tok) = env::var("GITHUB_TOKEN") {
-            if !tok.trim().is_empty() {
-                return Some(tok);
-            }
-        }
-        if let Ok(tok) = env::var("GH_TOKEN") {
-            if !tok.trim().is_empty() {
-                return Some(tok);
-            }
-        }
-
-        // 2) GitHub CLI (gh) – try status first (non-interactive), then token
-        if let Some(tok) = Self::github_token_from_gh_status() {
-            return Some(tok);
-        }
-        if let Some(tok) = Self::github_token_from_gh_token() {
-            return Some(tok);
-        }
-
-        // 3) Git credential helper (may have PAT stored as the password)
-        if let Some(tok) = Self::github_token_from_git_credentials("github.com") {
-            return Some(tok);
-        }
-        if let Some(tok) = Self::github_token_from_git_credentials("api.github.com") {
-            return Some(tok);
-        }
-
-        None
-    }
-
-    fn github_token_from_gh_status() -> Option<String> {
-        let mut cmd = Command::new("gh");
-        cmd.arg("auth")
-            .arg("status")
-            .arg("--show-token")
-            .env("GH_PROMPT_DISABLED", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-
-        let output = match cmd.output() {
-            Ok(o) => o,
-            Err(_) => return None,
-        };
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Look for a line like: "Token: ghp_..."
-        for line in stdout.lines() {
-            if let Some(idx) = line.find("Token:") {
-                let token_part = line[idx + "Token:".len()..].trim();
-                if !token_part.is_empty() && token_part != "<TOKEN>" {
-                    return Some(token_part.to_string());
-                }
-            }
-        }
-        None
-    }
-
-    fn github_token_from_gh_token() -> Option<String> {
-        let mut cmd = Command::new("gh");
-        cmd.arg("auth")
-            .arg("token")
-            .env("GH_PROMPT_DISABLED", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let output = match cmd.output() {
-            Ok(o) => o,
-            Err(_) => return None,
-        };
-        if !output.status.success() {
-            return None;
-        }
-        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if token.is_empty() {
-            None
-        } else {
-            Some(token)
-        }
-    }
-
-    fn github_token_from_git_credentials(host: &str) -> Option<String> {
-        let mut cmd = Command::new("git");
-        cmd.arg("credential")
-            .arg("fill")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(_) => return None,
-        };
-
-        if let Some(mut stdin) = child.stdin.take() {
-            // Standard input format for git credential helper
-            let _ = write!(stdin, "protocol=https\nhost={}\n\n", host);
-        }
-
-        let output = match child.wait_with_output() {
-            Ok(o) => o,
-            Err(_) => return None,
-        };
-
-        if !output.status.success() {
-            return None;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Parse key=value lines; prefer password as token
-        let mut password: Option<String> = None;
-        for line in stdout.lines() {
-            if let Some((k, v)) = line.split_once('=') {
-                if k == "password" && !v.trim().is_empty() {
-                    password = Some(v.trim().to_string());
-                    break;
-                }
-            }
-        }
-        password
-    }
-
     fn push_config_to_github(&self, message: Option<&str>) -> Result<(), String> {
         let repo = GITHUB_REPO;
         let branch = GITHUB_BRANCH;
         let path_in_repo = GITHUB_CONFIG_PATH;
         let commit_message = message.unwrap_or("chore(config): update alias config");
 
-        let token = Self::github_token().ok_or_else(|| {
+        let token = self.token_provider.get_token().ok_or_else(|| {
             "Missing GitHub token. Set A_GITHUB_TOKEN/GITHUB_TOKEN/GH_TOKEN or login via gh/git.".to_string()
         })?;
 
@@ -722,7 +789,7 @@ impl AliasManager {
         let branch = GITHUB_BRANCH;
         let path_in_repo = GITHUB_CONFIG_PATH;
 
-        let token_opt = Self::github_token();
+        let token_opt = self.token_provider.get_token();
 
         let api_url = format!(
             "https://api.github.com/repos/{}/contents/{}?ref={}",
@@ -1167,8 +1234,26 @@ impl AliasManager {
                 COLOR_RESET
             );
 
-            match self.execute_single_command(command_str, args_to_use) {
-                Ok(()) => continue,
+            match self.execute_single_command_with_exit_code(command_str, args_to_use) {
+                Ok(0) => continue,
+                Ok(code) => {
+                    eprintln!(
+                        "{}Command failed with code {}{} ",
+                        COLOR_YELLOW, code, COLOR_RESET
+                    );
+                    eprintln!(
+                        "{}Stopping command chain at step {}/{}{}",
+                        COLOR_YELLOW,
+                        index + 1,
+                        commands.len(),
+                        COLOR_RESET
+                    );
+                    return Err(format!(
+                        "Command chain stopped at step {} (exit code {})",
+                        index + 1,
+                        code
+                    ));
+                }
                 Err(e) => {
                     eprintln!("{}Command failed:{} {}", COLOR_YELLOW, COLOR_RESET, e);
                     eprintln!(
@@ -2241,6 +2326,16 @@ mod tests {
         }
     }
 
+    struct MockTokenProvider {
+        token: Option<String>,
+    }
+
+    impl TokenProvider for MockTokenProvider {
+        fn get_token(&self) -> Option<String> {
+            self.token.clone()
+        }
+    }
+
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
@@ -2304,12 +2399,21 @@ mod tests {
 
         let runner = Arc::new(MockCommandRunner::with_responses(command_responses));
         let github = Arc::new(MockGitHubClient::with_responses(github_responses));
+        let token_provider = Arc::new(MockTokenProvider {
+            token: Some("mock-token".to_string()),
+        });
 
         let runner_trait: Arc<dyn CommandRunner + Send + Sync> = runner.clone();
         let github_trait: Arc<dyn GitHubClient + Send + Sync> = github.clone();
+        let token_provider_trait: Arc<dyn TokenProvider + Send + Sync> = token_provider.clone();
 
-        let manager =
-            AliasManager::with_dependencies(Config::new(), config_path, runner_trait, github_trait);
+        let manager = AliasManager::with_dependencies(
+            Config::new(),
+            config_path,
+            runner_trait,
+            github_trait,
+            token_provider_trait,
+        );
 
         (manager, temp_dir, runner, github)
     }
@@ -2513,6 +2617,7 @@ mod tests {
             manager.config_path.clone(),
             loaded_runner,
             loaded_github,
+            Arc::new(MockTokenProvider { token: None }),
         );
 
         let entry = loaded_manager.config.get_alias("test").unwrap();
@@ -2949,7 +3054,13 @@ mod tests {
 
         let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockCommandRunner::new());
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
-        let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+        let manager = AliasManager::with_dependencies(
+            Config::new(),
+            config_path,
+            runner,
+            github,
+            Arc::new(MockTokenProvider { token: None }),
+        );
 
         let target_dir = temp_dir.path().join("target");
         let result = manager.export_config(Some(target_dir.to_str().unwrap()));
@@ -2994,7 +3105,8 @@ mod tests {
         let _git_guard = EnvVarGuard::set("GITHUB_TOKEN", "second");
         let _a_guard = EnvVarGuard::set("A_GITHUB_TOKEN", "first");
 
-        assert_eq!(AliasManager::github_token().as_deref(), Some("first"));
+        let provider = SystemTokenProvider::new();
+        assert_eq!(provider.get_token().as_deref(), Some("first"));
     }
 
     #[test]
@@ -3030,7 +3142,7 @@ mod tests {
         assert!(put_request
             .headers
             .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer test-token"));
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer mock-token"));
     }
 
     #[test]
@@ -3119,7 +3231,7 @@ mod tests {
         assert!(requests[0]
             .headers
             .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer pull-token"));
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer mock-token"));
 
         let _ = fs::remove_file(temp_dir.path().join("config.backup.json"));
     }
@@ -3152,7 +3264,13 @@ mod tests {
 
         let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
-        let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+        let manager = AliasManager::with_dependencies(
+            Config::new(),
+            config_path,
+            runner,
+            github,
+            Arc::new(MockTokenProvider { token: None }),
+        );
 
         #[cfg(windows)]
         let command = "cmd /C exit 0";
@@ -3182,7 +3300,7 @@ mod tests {
         let _path_guard = EnvVarGuard::set("PATH", new_path);
         let _pathext_guard = EnvVarGuard::set("PATHEXT", ".COM;.EXE;.BAT;.CMD");
 
-        let runner = SystemCommandRunner::default();
+        let runner = SystemCommandRunner;
         let exit = runner.run("shim", &[]).expect("command succeeds");
         assert_eq!(exit, 0);
     }
@@ -3211,8 +3329,13 @@ mod tests {
 
         let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
-        let mut manager =
-            AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+        let mut manager = AliasManager::with_dependencies(
+            Config::new(),
+            config_path,
+            runner,
+            github,
+            Arc::new(MockTokenProvider { token: None }),
+        );
 
         manager
             .add_alias(
@@ -3256,8 +3379,13 @@ mod tests {
 
         let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
-        let mut manager =
-            AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+        let mut manager = AliasManager::with_dependencies(
+            Config::new(),
+            config_path,
+            runner,
+            github,
+            Arc::new(MockTokenProvider { token: None }),
+        );
 
         manager
             .add_alias(
@@ -3282,7 +3410,13 @@ mod tests {
 
         let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(SystemCommandRunner);
         let github: Arc<dyn GitHubClient + Send + Sync> = Arc::new(MockGitHubClient::new());
-        let manager = AliasManager::with_dependencies(Config::new(), config_path, runner, github);
+        let manager = AliasManager::with_dependencies(
+            Config::new(),
+            config_path,
+            runner,
+            github,
+            Arc::new(MockTokenProvider { token: None }),
+        );
 
         let err = manager
             .execute_single_command_with_exit_code("definitely-not-a-real-binary", &[])
@@ -3403,7 +3537,7 @@ mod tests {
 
     #[test]
     fn test_system_command_runner_success() {
-        let runner = SystemCommandRunner::default();
+        let runner = SystemCommandRunner;
         #[cfg(windows)]
         let args = vec!["/C".to_string(), "exit 0".to_string()];
         #[cfg(not(windows))]
@@ -3420,7 +3554,7 @@ mod tests {
 
     #[test]
     fn test_system_command_runner_missing_program_errors() {
-        let runner = SystemCommandRunner::default();
+        let runner = SystemCommandRunner;
         let err = runner
             .run("definitely-not-a-real-binary", &[])
             .expect_err("expected failure");
@@ -3518,7 +3652,7 @@ mod tests {
 
     impl Write for FailingWriter {
         fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            Err(io::Error::new(io::ErrorKind::Other, "cannot write"))
+            Err(io::Error::other("cannot write"))
         }
 
         fn flush(&mut self) -> io::Result<()> {
@@ -4259,5 +4393,246 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].1, vec!["hello"]);
         assert_eq!(calls[1].1, vec!["world"]);
+    }
+
+    #[test]
+    fn test_execute_legacy_command_chain() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Ok(0)], Vec::new());
+
+        let command = "echo 1 && echo 2";
+        let result = manager.execute_legacy_command_chain(command, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "echo");
+        assert_eq!(calls[0].1, vec!["1"]);
+        assert_eq!(calls[1].0, "echo");
+        assert_eq!(calls[1].1, vec!["2"]);
+    }
+
+    #[test]
+    fn test_execute_legacy_command_chain_failure() {
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(1), Ok(0)], Vec::new());
+
+        let command = "echo 1 && echo 2";
+        let result = manager.execute_legacy_command_chain(command, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("stopped at step 1"));
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn test_migrate_legacy_config_with_chain() {
+        let legacy_json = r#"{
+            "aliases": {
+                "test": {
+                    "command": "echo 1 && echo 2",
+                    "description": "legacy chain",
+                    "created": "2025-01-01"
+                }
+            }
+        }"#;
+
+        let config = AliasManager::migrate_legacy_config(legacy_json).unwrap();
+        let entry = config.get_alias("test").unwrap();
+
+        if let CommandType::Simple(cmd) = &entry.command_type {
+            assert_eq!(cmd, "echo 1 && echo 2");
+        } else {
+            panic!("Expected Simple command type");
+        }
+    }
+
+    type OutputHandler =
+        Box<dyn Fn(&str, &[String]) -> io::Result<std::process::Output> + Send + Sync>;
+
+    struct MockOutputCommandRunner {
+        handler: OutputHandler,
+    }
+
+    impl MockOutputCommandRunner {
+        fn new(
+            handler: impl Fn(&str, &[String]) -> io::Result<std::process::Output>
+                + Send
+                + Sync
+                + 'static,
+        ) -> Self {
+            Self {
+                handler: Box::new(handler),
+            }
+        }
+    }
+
+    impl OutputCommandRunner for MockOutputCommandRunner {
+        fn run_capture(
+            &self,
+            program: &str,
+            args: &[String],
+            _envs: &HashMap<String, String>,
+            _stdin: Option<&str>,
+        ) -> io::Result<std::process::Output> {
+            (self.handler)(program, args)
+        }
+    }
+
+    fn get_status(success: bool) -> std::process::ExitStatus {
+        #[cfg(windows)]
+        let (cmd, args) = ("cmd", vec!["/C", if success { "exit 0" } else { "exit 1" }]);
+        #[cfg(not(windows))]
+        let (cmd, args) = (if success { "true" } else { "false" }, vec![]);
+
+        std::process::Command::new(cmd).args(args).status().unwrap()
+    }
+
+    #[test]
+    fn test_system_token_provider_gh_status() {
+        let _env_guard = env_lock().lock().unwrap();
+        let _g1 = EnvVarGuard::set("A_GITHUB_TOKEN", "");
+        let _g2 = EnvVarGuard::set("GITHUB_TOKEN", "");
+        let _g3 = EnvVarGuard::set("GH_TOKEN", "");
+
+        let runner = Arc::new(MockOutputCommandRunner::new(|program, args| {
+            if program == "gh" && args.contains(&"status".to_string()) {
+                Ok(std::process::Output {
+                    status: get_status(true),
+                    stdout: b"Token: ghp_ABC".to_vec(),
+                    stderr: vec![],
+                })
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
+            }
+        }));
+
+        let provider = SystemTokenProvider::with_runner(runner);
+        assert_eq!(provider.get_token().as_deref(), Some("ghp_ABC"));
+    }
+
+    #[test]
+    fn test_system_token_provider_gh_token() {
+        let _env_guard = env_lock().lock().unwrap();
+        let _g1 = EnvVarGuard::set("A_GITHUB_TOKEN", "");
+        let _g2 = EnvVarGuard::set("GITHUB_TOKEN", "");
+        let _g3 = EnvVarGuard::set("GH_TOKEN", "");
+
+        let runner = Arc::new(MockOutputCommandRunner::new(|program, args| {
+            if program == "gh" && args.contains(&"status".to_string()) {
+                Ok(std::process::Output {
+                    status: get_status(false), // status failed
+                    stdout: vec![],
+                    stderr: vec![],
+                })
+            } else if program == "gh" && args.contains(&"token".to_string()) {
+                Ok(std::process::Output {
+                    status: get_status(true),
+                    stdout: b"ghp_TOKEN\n".to_vec(),
+                    stderr: vec![],
+                })
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
+            }
+        }));
+
+        let provider = SystemTokenProvider::with_runner(runner);
+        assert_eq!(provider.get_token().as_deref(), Some("ghp_TOKEN"));
+    }
+
+    struct PanickingRunner;
+    impl CommandRunner for PanickingRunner {
+        fn run(&self, _program: &str, _args: &[String]) -> Result<i32, String> {
+            panic!("Runner panic");
+        }
+    }
+
+    #[test]
+    fn test_execute_parallel_chain_panic() {
+        let runner = Arc::new(PanickingRunner);
+        let github = Arc::new(MockGitHubClient::new());
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        let token_provider = Arc::new(MockTokenProvider { token: None });
+
+        let manager = AliasManager::with_dependencies(
+            Config::new(),
+            config_path,
+            runner,
+            github,
+            token_provider,
+        );
+
+        let chain = CommandChain {
+            commands: vec![ChainCommand {
+                command: "test".to_string(),
+                operator: None,
+            }],
+            parallel: true,
+        };
+
+        let result = manager.execute_parallel_chain(&chain, &[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Thread panicked") || err.contains("Failed to receive command results")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_windows_program_empty_path() {
+        let _env_guard = env_lock().lock().unwrap();
+        let _path_guard = EnvVarGuard::set("PATH", "");
+        let _pathext_guard = EnvVarGuard::set("PATHEXT", ".EXE");
+
+        // Should return None if not found (and not absolute path)
+        let resolved = SystemCommandRunner::resolve_windows_program("nonexistent");
+        assert!(resolved.is_none());
+
+        // Should find absolute path?
+        // Logic: has_separator -> checks existence.
+        // If I pass absolute path to existing file, it should work regardless of PATH.
+        let temp_dir = TempDir::new().unwrap();
+        let exe_path = temp_dir.path().join("test.EXE");
+        fs::write(&exe_path, "").unwrap();
+
+        let exe_path_no_ext = temp_dir.path().join("test");
+        let resolved =
+            SystemCommandRunner::resolve_windows_program(exe_path_no_ext.to_str().unwrap());
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap(), exe_path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_windows_program_edge_cases() {
+        let _env_guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Setup a dummy executable
+        let exe_path = temp_dir.path().join("test.EXE");
+        fs::write(&exe_path, "").unwrap();
+
+        // 1. Empty PATHEXT -> Defaults
+        let _path_guard = EnvVarGuard::set("PATH", temp_dir.path());
+        let _pathext_guard = EnvVarGuard::set("PATHEXT", "");
+
+        let resolved = SystemCommandRunner::resolve_windows_program("test");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap(), exe_path);
+
+        // 2. PATHEXT with empty entries
+        let _pathext_guard2 = EnvVarGuard::set("PATHEXT", ";.EXE;;.BAT");
+        let resolved = SystemCommandRunner::resolve_windows_program("test");
+        assert!(resolved.is_some());
+
+        // 3. Program with separator
+        let abs_path_no_ext = temp_dir.path().join("test");
+        let resolved =
+            SystemCommandRunner::resolve_windows_program(abs_path_no_ext.to_str().unwrap());
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap(), exe_path);
     }
 }

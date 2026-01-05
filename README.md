@@ -290,23 +290,23 @@ Aliases are stored in:
 Run the standard checks before pushing changes:
 
 ```bash
-cargo fmt
-cargo clippy -- -D warnings
-cargo test
+car go fmt
+car go clippy -- -D warnings
+car go test
 ```
 
 To inspect coverage:
 
 ```bash
 # Fast JSON summary (captured by CI)
-cargo llvm-cov --json --summary-only --output-path coverage-summary.json
+car go llvm-cov --json --summary-only --output-path coverage-summary.json
 
 # Optional deeper dives
-cargo llvm-cov --text --show-missing-lines
-cargo llvm-cov --html --open
+car go llvm-cov --text --show-missing-lines
+car go llvm-cov --html --open
 ```
 
-We aim to keep **line coverage ≥ 80 %** and **function coverage ≥ 75 %**. Commit the refreshed `coverage-summary.json` alongside feature work so trends remain visible.
+We aim to keep **line coverage ≥ 80 %** and **function coverage ≥ 75 %**. Current coverage is **~91%**. Commit the refreshed `coverage-summary.json` alongside feature work so trends remain visible.
 
 The configuration file is automatically created and updated when you add/remove aliases.
 
@@ -385,17 +385,17 @@ The following alias names are reserved and cannot be used:
 ### Running Tests
 
 ```bash
-cargo test
+car go test
 ```
 
 ### Building
 
 ```bash
 # Debug build
-cargo build
+car go build
 
 # Release build (optimized)
-cargo build --release
+car go build --release
 ```
 
 ## Architecture
@@ -414,6 +414,12 @@ The tool uses a **dispatcher pattern** with distinct namespaces:
 - `CommandType::Chain`: Complex command chains with conditional operators
 - `ChainOperator`: Defines execution conditions (And, Or, Always, IfCode)
 - `CommandChain`: Contains command sequences with optional parallel execution
+
+**Dependency Injection:**
+- **`CommandRunner`**: Trait for executing shell commands (mockable).
+- **`GitHubClient`**: Trait for HTTP interactions (mockable).
+- **`TokenProvider`**: Trait for retrieving authentication tokens from environment/system (mockable).
+- **`OutputCommandRunner`**: Trait for capturing command output, used by `SystemTokenProvider` (mockable).
 
 **Execution Engine:**
 - **Sequential mode**: Commands run one-by-one with conditional logic based on exit codes
@@ -446,7 +452,7 @@ The tool uses a **dispatcher pattern** with distinct namespaces:
 - **Mock GitHub client**: Isolated testing of GitHub sync functionality
 - **Temporary file system**: Tests use `tempfile` crate for isolation
 - **Environment guards**: Safe parallel test execution with environment variable protection
-- **Comprehensive coverage**: Unit tests for all core functionality
+- **Comprehensive coverage**: Unit tests for all core functionality, including token retrieval and parallel execution panics.
 
 This architecture provides a clean separation of concerns, robust error handling, and consistent behavior across all supported platforms.
 
