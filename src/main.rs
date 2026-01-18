@@ -775,6 +775,12 @@ impl AliasManager {
                 "{}Config pushed to GitHub:{} https://github.com/{}/blob/{}/{}",
                 COLOR_GREEN, COLOR_RESET, repo, branch, path_in_repo
             );
+            println!(
+                "{}File contains {} aliases{}",
+                COLOR_GRAY,
+                self.config.aliases.len(),
+                COLOR_RESET
+            );
             Ok(())
         } else {
             Err(format!(
