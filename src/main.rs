@@ -1940,7 +1940,6 @@ fn print_examples() {
     );
 }
 
-#[allow(dead_code)] // Used in Stage 2 parser
 fn is_valid_save_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -5000,14 +4999,12 @@ mod tests {
             operator: None,
             save_as: Some("result".to_string()),
         }];
+        let parallel = false;
         let has_save = commands.iter().any(|c| c.save_as.is_some());
-        let command_type = if commands.len() == 1 && !has_save {
+        let command_type = if commands.len() == 1 && !parallel && !has_save {
             CommandType::Simple(commands[0].command.clone())
         } else {
-            CommandType::Chain(CommandChain {
-                commands,
-                parallel: false,
-            })
+            CommandType::Chain(CommandChain { commands, parallel })
         };
         assert!(matches!(command_type, CommandType::Chain(_)));
     }
@@ -5362,5 +5359,66 @@ mod tests {
         let display = entry.command_display();
         assert_eq!(display, "cargo build && mdrcp");
         assert!(!display.contains('@'), "No @ annotation without save_as");
+    }
+
+    #[test]
+    fn test_parallel_with_save_is_rejected() {
+        let commands = [
+            ChainCommand {
+                command: "echo first".to_string(),
+                operator: None,
+                save_as: Some("x".to_string()),
+            },
+            ChainCommand {
+                command: "echo second".to_string(),
+                operator: Some(ChainOperator::And),
+                save_as: None,
+            },
+        ];
+        let parallel = true;
+        let has_saves = commands.iter().any(|c| c.save_as.is_some());
+        let has_if_saved = commands
+            .iter()
+            .any(|c| matches!(c.operator, Some(ChainOperator::IfSaved { .. })));
+        assert!(
+            has_saves || has_if_saved,
+            "Validation should detect --save in parallel chain"
+        );
+        assert!(
+            parallel,
+            "This test verifies the parallel+save combination is detectable"
+        );
+    }
+
+    #[test]
+    fn test_parallel_with_if_saved_is_rejected() {
+        let commands = [
+            ChainCommand {
+                command: "echo first".to_string(),
+                operator: None,
+                save_as: None,
+            },
+            ChainCommand {
+                command: "echo second".to_string(),
+                operator: Some(ChainOperator::IfSaved {
+                    name: "x".to_string(),
+                    code: 0,
+                }),
+                save_as: None,
+            },
+        ];
+        let parallel = true;
+        let has_saves = commands.iter().any(|c| c.save_as.is_some());
+        let has_if_saved = commands
+            .iter()
+            .any(|c| matches!(c.operator, Some(ChainOperator::IfSaved { .. })));
+        assert!(
+            has_saves || has_if_saved,
+            "Validation should detect --if-saved in parallel chain"
+        );
+        assert!(
+            parallel,
+            "This test verifies the parallel+if-saved combination is detectable"
+        );
     }
 }

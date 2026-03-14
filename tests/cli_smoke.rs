@@ -879,3 +879,46 @@ fn list_no_aliases() {
         .success()
         .stdout(predicate::str::contains("No aliases configured"));
 }
+
+#[test]
+fn test_save_if_saved_alias_creation_and_display() {
+    let (mut cmd, home) = command_with_home();
+    let _ = alias_config_path(&home);
+
+    // Create alias with --save and --if-saved
+    cmd.args([
+        "--add",
+        "test_save_e2e",
+        "true",
+        "--save",
+        "result",
+        "--if-saved",
+        "result=0",
+        "true",
+        "--force",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Added alias"));
+
+    // List and verify display contains @result and ?s[result=0]
+    let (mut list_cmd, _) = command_with_home();
+    list_cmd.env("HOME", home.path());
+    list_cmd.env("USERPROFILE", home.path());
+    list_cmd
+        .arg("--list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("@result"))
+        .stdout(predicate::str::contains("?s[result=0]"));
+
+    // Remove alias
+    let (mut rm_cmd, _) = command_with_home();
+    rm_cmd.env("HOME", home.path());
+    rm_cmd.env("USERPROFILE", home.path());
+    rm_cmd
+        .args(["--remove", "test_save_e2e"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed alias"));
+}
