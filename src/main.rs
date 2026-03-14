@@ -30,12 +30,16 @@ enum ChainOperator {
     Or,          // || - run if previous failed
     Always,      // ; - always run regardless
     IfCode(i32), // run if previous exit code equals N
+    IfSaved { name: String, code: i32 },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ChainCommand {
     command: String,
     operator: Option<ChainOperator>, // None for the first command
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    save_as: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -317,6 +321,9 @@ impl AliasEntry {
                             Some(ChainOperator::Or) => " || ",
                             Some(ChainOperator::Always) => " ; ",
                             Some(ChainOperator::IfCode(code)) => &format!(" ?[{}] ", code),
+                            Some(ChainOperator::IfSaved { name, code }) => {
+                                &format!(" ?s[{}={}] ", name, code)
+                            }
                             None => " ",
                         };
                         result.push_str(op_str);
@@ -1090,6 +1097,9 @@ impl AliasManager {
                         Some(ChainOperator::IfCode(code)) => {
                             &format!(" (run if previous exit code = {})", code)
                         }
+                        Some(ChainOperator::IfSaved { name, code }) => {
+                            &format!(" (run if '{}' == {})", name, code)
+                        }
                         None => "",
                     };
                     let has_vars = if Self::has_parameter_variables(&chain_cmd.command) {
@@ -1295,6 +1305,7 @@ impl AliasManager {
                 Some(ChainOperator::Or) => last_exit_code != 0,
                 Some(ChainOperator::Always) => true,
                 Some(ChainOperator::IfCode(code)) => last_exit_code == *code,
+                Some(ChainOperator::IfSaved { .. }) => false, // placeholder — Stage 3 will implement
             };
 
             if !should_execute {
@@ -1307,6 +1318,9 @@ impl AliasManager {
                         "previous exit code was {}, expected {}",
                         last_exit_code, code
                     ),
+                    Some(ChainOperator::IfSaved { name, code }) => {
+                        format!("saved '{}' condition not met (expected {})", name, code)
+                    }
                     _ => "unknown condition".to_string(),
                 };
                 println!(
@@ -1340,6 +1354,7 @@ impl AliasManager {
                 Some(ChainOperator::Or) => " (||)",
                 Some(ChainOperator::Always) => " (;)",
                 Some(ChainOperator::IfCode(code)) => &format!(" (?[{}])", code),
+                Some(ChainOperator::IfSaved { name, code }) => &format!(" (?s[{}={}])", name, code),
                 None => "",
             };
 
@@ -1886,6 +1901,33 @@ fn print_examples() {
     );
 }
 
+#[allow(dead_code)] // Used in Stage 2 parser
+fn is_valid_save_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[allow(dead_code)] // Used in Stage 2 parser
+fn parse_name_code(s: &str) -> Result<(String, i32), String> {
+    let (name, code_str) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected NAME=CODE, got '{}'", s))?;
+    if !is_valid_save_name(name) {
+        return Err(format!("invalid save name '{}'", name));
+    }
+    let code = code_str
+        .parse::<i32>()
+        .map_err(|_| format!("invalid exit code '{}' (expected integer)", code_str))?;
+    Ok((name.to_string(), code))
+}
+
 fn print_version() {
     println!(
         "{}{}🚀 Alias Manager v{}{}",
@@ -2028,6 +2070,7 @@ fn main() {
             let mut commands = vec![ChainCommand {
                 command: first_command,
                 operator: None, // First command has no operator
+                save_as: None,
             }];
 
             let mut i = 4;
@@ -2058,6 +2101,7 @@ fn main() {
                             commands.push(ChainCommand {
                                 command: args[i + 1].clone(),
                                 operator: Some(ChainOperator::And),
+                                save_as: None,
                             });
                             i += 2;
                         } else {
@@ -2073,6 +2117,7 @@ fn main() {
                             commands.push(ChainCommand {
                                 command: args[i + 1].clone(),
                                 operator: Some(ChainOperator::Or),
+                                save_as: None,
                             });
                             i += 2;
                         } else {
@@ -2088,6 +2133,7 @@ fn main() {
                             commands.push(ChainCommand {
                                 command: args[i + 1].clone(),
                                 operator: Some(ChainOperator::Always),
+                                save_as: None,
                             });
                             i += 2;
                         } else {
@@ -2105,6 +2151,7 @@ fn main() {
                                     commands.push(ChainCommand {
                                         command: args[i + 2].clone(),
                                         operator: Some(ChainOperator::IfCode(code)),
+                                        save_as: None,
                                     });
                                     i += 3;
                                 }
@@ -2680,14 +2727,17 @@ mod tests {
                 ChainCommand {
                     command: "echo first".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo second".to_string(),
                     operator: Some(ChainOperator::And),
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo third".to_string(),
                     operator: Some(ChainOperator::Or),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -2921,10 +2971,12 @@ mod tests {
                 ChainCommand {
                     command: "git tag $1".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "git push origin $1".to_string(),
                     operator: Some(ChainOperator::And),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -3708,14 +3760,17 @@ mod tests {
                 ChainCommand {
                     command: "echo first".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo second".to_string(),
                     operator: Some(ChainOperator::And),
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo third".to_string(),
                     operator: Some(ChainOperator::Or),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -3742,14 +3797,17 @@ mod tests {
                 ChainCommand {
                     command: "echo alpha".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo beta".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo gamma".to_string(),
                     operator: None,
+                    save_as: None,
                 },
             ],
             parallel: true,
@@ -3776,14 +3834,17 @@ mod tests {
                 ChainCommand {
                     command: "echo first".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo second".to_string(),
                     operator: Some(ChainOperator::IfCode(2)),
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo third".to_string(),
                     operator: Some(ChainOperator::Always),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -3806,10 +3867,12 @@ mod tests {
                 ChainCommand {
                     command: "echo success".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo skipped".to_string(),
                     operator: Some(ChainOperator::Or),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -3832,10 +3895,12 @@ mod tests {
                 ChainCommand {
                     command: "echo fail".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo recovery".to_string(),
                     operator: Some(ChainOperator::Or),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -3858,10 +3923,12 @@ mod tests {
                 ChainCommand {
                     command: "echo first".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo skipped".to_string(),
                     operator: Some(ChainOperator::IfCode(0)),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -3884,14 +3951,17 @@ mod tests {
                 ChainCommand {
                     command: "echo one".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo two".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo three".to_string(),
                     operator: None,
+                    save_as: None,
                 },
             ],
             parallel: true,
@@ -3919,10 +3989,12 @@ mod tests {
                     ChainCommand {
                         command: "echo a".to_string(),
                         operator: None,
+                        save_as: None,
                     },
                     ChainCommand {
                         command: "echo b".to_string(),
                         operator: Some(ChainOperator::And),
+                        save_as: None,
                     },
                 ],
                 parallel: false,
@@ -4027,10 +4099,12 @@ mod tests {
                 ChainCommand {
                     command: "echo fail".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo should_skip".to_string(),
                     operator: Some(ChainOperator::And),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -4194,6 +4268,7 @@ mod tests {
                     } else {
                         Some(ChainOperator::And)
                     },
+                    save_as: None,
                 })
                 .collect(),
             parallel: false,
@@ -4215,6 +4290,7 @@ mod tests {
             commands: vec![ChainCommand {
                 command: "echo test".to_string(),
                 operator: None,
+                save_as: None,
             }],
             parallel: true,
         };
@@ -4276,14 +4352,17 @@ mod tests {
                 ChainCommand {
                     command: "echo fail1".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo fail2".to_string(),
                     operator: Some(ChainOperator::Always),
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo fail3".to_string(),
                     operator: Some(ChainOperator::Always),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -4310,18 +4389,22 @@ mod tests {
                 ChainCommand {
                     command: "echo first".to_string(),
                     operator: None,
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo skip1".to_string(),
                     operator: Some(ChainOperator::IfCode(0)),
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo run".to_string(),
                     operator: Some(ChainOperator::IfCode(3)),
+                    save_as: None,
                 },
                 ChainCommand {
                     command: "echo final".to_string(),
                     operator: Some(ChainOperator::And),
+                    save_as: None,
                 },
             ],
             parallel: false,
@@ -4346,10 +4429,12 @@ mod tests {
                     ChainCommand {
                         command: "echo a".to_string(),
                         operator: None,
+                        save_as: None,
                     },
                     ChainCommand {
                         command: "echo b".to_string(),
                         operator: Some(ChainOperator::And),
+                        save_as: None,
                     },
                 ],
                 parallel: true,
@@ -4378,10 +4463,12 @@ mod tests {
                         ChainCommand {
                             command: "echo $1".to_string(),
                             operator: None,
+                            save_as: None,
                         },
                         ChainCommand {
                             command: "echo $2".to_string(),
                             operator: Some(ChainOperator::And),
+                            save_as: None,
                         },
                     ],
                     parallel: false,
@@ -4490,7 +4577,7 @@ mod tests {
         #[cfg(windows)]
         let (cmd, args) = ("cmd", vec!["/C", if success { "exit 0" } else { "exit 1" }]);
         #[cfg(not(windows))]
-        let (cmd, args) = (if success { "true" } else { "false" }, vec![]);
+        let (cmd, args): (&str, Vec<&str>) = (if success { "true" } else { "false" }, vec![]);
 
         std::process::Command::new(cmd).args(args).status().unwrap()
     }
@@ -4574,6 +4661,7 @@ mod tests {
             commands: vec![ChainCommand {
                 command: "test".to_string(),
                 operator: None,
+                save_as: None,
             }],
             parallel: true,
         };
@@ -4640,5 +4728,107 @@ mod tests {
             SystemCommandRunner::resolve_windows_program(abs_path_no_ext.to_str().unwrap());
         assert!(resolved.is_some());
         assert_eq!(resolved.unwrap(), exe_path);
+    }
+
+    #[test]
+    fn test_if_saved_serialization_roundtrip() {
+        let op = ChainOperator::IfSaved {
+            name: "build".to_string(),
+            code: 0,
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        let deserialized: ChainOperator = serde_json::from_str(&json).unwrap();
+        if let ChainOperator::IfSaved { name, code } = deserialized {
+            assert_eq!(name, "build");
+            assert_eq!(code, 0);
+        } else {
+            panic!("Expected IfSaved variant");
+        }
+    }
+
+    #[test]
+    fn test_chain_command_save_as_serialization() {
+        let cmd = ChainCommand {
+            command: "echo hi".to_string(),
+            operator: None,
+            save_as: Some("result".to_string()),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("save_as"));
+        let deserialized: ChainCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.save_as, Some("result".to_string()));
+    }
+
+    #[test]
+    fn test_chain_command_save_as_none_omitted() {
+        let cmd = ChainCommand {
+            command: "echo hi".to_string(),
+            operator: None,
+            save_as: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(
+            !json.contains("save_as"),
+            "save_as: None should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn test_old_config_without_save_as_deserializes() {
+        // Old config format without save_as field
+        let json = r#"{"command":"echo hi","operator":null}"#;
+        let cmd: ChainCommand = serde_json::from_str(json).unwrap();
+        assert_eq!(cmd.save_as, None);
+    }
+
+    #[test]
+    fn test_is_valid_save_name_accepts_identifiers() {
+        assert!(is_valid_save_name("foo"));
+        assert!(is_valid_save_name("_bar"));
+        assert!(is_valid_save_name("was_running"));
+        assert!(is_valid_save_name("x"));
+        assert!(is_valid_save_name("ABC123"));
+        assert!(is_valid_save_name("_"));
+        assert!(is_valid_save_name("__test__"));
+    }
+
+    #[test]
+    fn test_is_valid_save_name_rejects_invalid() {
+        assert!(!is_valid_save_name(""));
+        assert!(!is_valid_save_name("123abc")); // starts with digit
+        assert!(!is_valid_save_name("has space"));
+        assert!(!is_valid_save_name("has=equals"));
+        assert!(!is_valid_save_name("has-dash"));
+        assert!(!is_valid_save_name("--flag"));
+    }
+
+    #[test]
+    fn test_parse_name_code_valid() {
+        let (name, code) = parse_name_code("was_running=0").unwrap();
+        assert_eq!(name, "was_running");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_parse_name_code_negative_code() {
+        let (name, code) = parse_name_code("result=-1").unwrap();
+        assert_eq!(name, "result");
+        assert_eq!(code, -1);
+    }
+
+    #[test]
+    fn test_parse_name_code_missing_equals() {
+        assert!(parse_name_code("noequals").is_err());
+    }
+
+    #[test]
+    fn test_parse_name_code_non_numeric_code() {
+        assert!(parse_name_code("name=abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_name_code_invalid_name() {
+        assert!(parse_name_code("123=0").is_err());
+        assert!(parse_name_code("has space=0").is_err());
     }
 }
