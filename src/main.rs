@@ -1914,7 +1914,6 @@ fn is_valid_save_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-#[allow(dead_code)] // Used in Stage 2 parser
 fn parse_name_code(s: &str) -> Result<(String, i32), String> {
     let (name, code_str) = s
         .split_once('=')
@@ -2171,6 +2170,59 @@ fn main() {
                             std::process::exit(1);
                         }
                     }
+                    "--save" => {
+                        if i + 1 >= args.len() {
+                            eprintln!(
+                                "{}Error:{} --save requires a name",
+                                COLOR_YELLOW, COLOR_RESET
+                            );
+                            std::process::exit(1);
+                        }
+                        let name = &args[i + 1];
+                        if !is_valid_save_name(name) {
+                            eprintln!(
+                                "{}Error:{} save name must match [a-zA-Z_][a-zA-Z0-9_]*, got '{}'",
+                                COLOR_YELLOW, COLOR_RESET, name
+                            );
+                            std::process::exit(1);
+                        }
+                        match commands.last_mut() {
+                            Some(cmd) => {
+                                cmd.save_as = Some(name.clone());
+                            }
+                            None => {
+                                eprintln!(
+                                    "{}Error:{} --save must follow a command",
+                                    COLOR_YELLOW, COLOR_RESET
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                        i += 2;
+                    }
+                    "--if-saved" => {
+                        if i + 2 >= args.len() {
+                            eprintln!(
+                                "{}Error:{} --if-saved requires <name>=<code> and a command",
+                                COLOR_YELLOW, COLOR_RESET
+                            );
+                            std::process::exit(1);
+                        }
+                        match parse_name_code(&args[i + 1]) {
+                            Ok((name, code)) => {
+                                commands.push(ChainCommand {
+                                    command: args[i + 2].clone(),
+                                    operator: Some(ChainOperator::IfSaved { name, code }),
+                                    save_as: None,
+                                });
+                                i += 3;
+                            }
+                            Err(e) => {
+                                eprintln!("{}Error:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
                     _ => {
                         eprintln!(
                             "{}Error:{} Unknown option '{}'",
@@ -2181,8 +2233,41 @@ fn main() {
                 }
             }
 
+            // Validate: --save and --if-saved cannot be used with --parallel
+            if parallel {
+                let has_saves = commands.iter().any(|c| c.save_as.is_some());
+                let has_if_saved = commands
+                    .iter()
+                    .any(|c| matches!(c.operator, Some(ChainOperator::IfSaved { .. })));
+                if has_saves || has_if_saved {
+                    eprintln!(
+                        "{}Error:{} --save and --if-saved cannot be used with --parallel",
+                        COLOR_YELLOW, COLOR_RESET
+                    );
+                    std::process::exit(1);
+                }
+            }
+
+            // Validate: every --if-saved must reference an earlier --save
+            let mut defined_saves: Vec<&str> = Vec::new();
+            for cmd in &commands {
+                if let Some(ChainOperator::IfSaved { ref name, .. }) = cmd.operator {
+                    if !defined_saves.contains(&name.as_str()) {
+                        eprintln!(
+                            "{}Error:{} --if-saved references '{}' but no prior --save defines it",
+                            COLOR_YELLOW, COLOR_RESET, name
+                        );
+                        std::process::exit(1);
+                    }
+                }
+                if let Some(ref save_name) = cmd.save_as {
+                    defined_saves.push(save_name.as_str());
+                }
+            }
+
             // Determine if we should create a simple or complex command
-            let command_type = if commands.len() == 1 && !parallel {
+            let has_save = commands.iter().any(|c| c.save_as.is_some());
+            let command_type = if commands.len() == 1 && !parallel && !has_save {
                 // Single command, use simple type for backward compatibility
                 CommandType::Simple(commands[0].command.clone())
             } else {
@@ -4830,5 +4915,141 @@ mod tests {
     fn test_parse_name_code_invalid_name() {
         assert!(parse_name_code("123=0").is_err());
         assert!(parse_name_code("has space=0").is_err());
+    }
+
+    #[test]
+    fn test_save_flag_sets_save_as_on_chain_command() {
+        // Simulate parsing: "cmd1" --save result --and "cmd2"
+        // Should result in cmd1 having save_as = Some("result")
+        let mut commands = vec![ChainCommand {
+            command: "echo cmd1".to_string(),
+            operator: None,
+            save_as: None,
+        }];
+        // Simulate --save: modify last command
+        commands.last_mut().unwrap().save_as = Some("result".to_string());
+        commands.push(ChainCommand {
+            command: "echo cmd2".to_string(),
+            operator: Some(ChainOperator::And),
+            save_as: None,
+        });
+        assert_eq!(commands[0].save_as, Some("result".to_string()));
+        assert_eq!(commands[1].save_as, None);
+    }
+
+    #[test]
+    fn test_if_saved_creates_correct_chain_command() {
+        let (name, code) = parse_name_code("was_running=0").unwrap();
+        let cmd = ChainCommand {
+            command: "tollens start".to_string(),
+            operator: Some(ChainOperator::IfSaved { name, code }),
+            save_as: None,
+        };
+        if let Some(ChainOperator::IfSaved { name, code }) = &cmd.operator {
+            assert_eq!(name, "was_running");
+            assert_eq!(*code, 0);
+        } else {
+            panic!("Expected IfSaved operator");
+        }
+    }
+
+    #[test]
+    fn test_save_as_prevents_simple_collapse() {
+        // A single command with save_as should NOT collapse to Simple
+        let commands = vec![ChainCommand {
+            command: "echo hi".to_string(),
+            operator: None,
+            save_as: Some("result".to_string()),
+        }];
+        let has_save = commands.iter().any(|c| c.save_as.is_some());
+        let command_type = if commands.len() == 1 && !has_save {
+            CommandType::Simple(commands[0].command.clone())
+        } else {
+            CommandType::Chain(CommandChain {
+                commands,
+                parallel: false,
+            })
+        };
+        assert!(matches!(command_type, CommandType::Chain(_)));
+    }
+
+    #[test]
+    fn test_if_saved_forward_reference_validation_fails() {
+        // IfSaved references "x" but --save "x" comes after
+        let commands = vec![
+            ChainCommand {
+                command: "echo first".to_string(),
+                operator: None,
+                save_as: None,
+            },
+            ChainCommand {
+                command: "echo second".to_string(),
+                operator: Some(ChainOperator::IfSaved {
+                    name: "x".to_string(),
+                    code: 0,
+                }),
+                save_as: None,
+            },
+            ChainCommand {
+                command: "echo third".to_string(),
+                operator: Some(ChainOperator::Always),
+                save_as: Some("x".to_string()),
+            },
+        ];
+        // Validation: check that every IfSaved name has a prior save
+        let mut defined_saves: Vec<&str> = Vec::new();
+        let mut validation_failed = false;
+        for cmd in &commands {
+            if let Some(ChainOperator::IfSaved { ref name, .. }) = cmd.operator {
+                if !defined_saves.contains(&name.as_str()) {
+                    validation_failed = true;
+                }
+            }
+            if let Some(ref save_name) = cmd.save_as {
+                defined_saves.push(save_name.as_str());
+            }
+        }
+        assert!(
+            validation_failed,
+            "Forward reference should fail validation"
+        );
+    }
+
+    #[test]
+    fn test_if_saved_valid_reference_passes_validation() {
+        // save "x" comes before if-saved "x"
+        let commands = vec![
+            ChainCommand {
+                command: "echo first".to_string(),
+                operator: None,
+                save_as: Some("x".to_string()),
+            },
+            ChainCommand {
+                command: "echo second".to_string(),
+                operator: Some(ChainOperator::Always),
+                save_as: None,
+            },
+            ChainCommand {
+                command: "echo third".to_string(),
+                operator: Some(ChainOperator::IfSaved {
+                    name: "x".to_string(),
+                    code: 0,
+                }),
+                save_as: None,
+            },
+        ];
+        let mut defined_saves: Vec<&str> = Vec::new();
+        let mut validation_failed = false;
+        for cmd in &commands {
+            if let Some(ChainOperator::IfSaved { ref name, .. }) = cmd.operator {
+                if !defined_saves.contains(&name.as_str()) {
+                    validation_failed = true;
+                }
+            }
+            if let Some(ref save_name) = cmd.save_as {
+                defined_saves.push(save_name.as_str());
+            }
+        }
+        assert!(!validation_failed, "Valid back-reference should pass");
     }
 }
