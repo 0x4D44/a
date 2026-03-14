@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-const VERSION: &str = "1.5.0";
+const VERSION: &str = "1.6.0";
 // Hardcoded GitHub target for config sync
 const GITHUB_REPO: &str = "0x4d44/a"; // owner/repo
 const GITHUB_BRANCH: &str = "main";
