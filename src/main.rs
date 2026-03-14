@@ -1297,6 +1297,7 @@ impl AliasManager {
         additional_args: &[String],
     ) -> Result<(), String> {
         let mut last_exit_code = 0;
+        let mut saved_codes: HashMap<String, i32> = HashMap::new();
 
         for (index, chain_cmd) in chain.commands.iter().enumerate() {
             let should_execute = match &chain_cmd.operator {
@@ -1305,7 +1306,9 @@ impl AliasManager {
                 Some(ChainOperator::Or) => last_exit_code != 0,
                 Some(ChainOperator::Always) => true,
                 Some(ChainOperator::IfCode(code)) => last_exit_code == *code,
-                Some(ChainOperator::IfSaved { .. }) => false, // placeholder — Stage 3 will implement
+                Some(ChainOperator::IfSaved { name, code }) => {
+                    saved_codes.get(name).copied() == Some(*code)
+                }
             };
 
             if !should_execute {
@@ -1318,9 +1321,12 @@ impl AliasManager {
                         "previous exit code was {}, expected {}",
                         last_exit_code, code
                     ),
-                    Some(ChainOperator::IfSaved { name, code }) => {
-                        format!("saved '{}' condition not met (expected {})", name, code)
-                    }
+                    Some(ChainOperator::IfSaved { name, code }) => match saved_codes.get(name) {
+                        Some(actual) => {
+                            format!("saved '{}' was {}, expected {}", name, actual, code)
+                        }
+                        None => format!("saved '{}' not set", name),
+                    },
                     _ => "unknown condition".to_string(),
                 };
                 println!(
@@ -1358,8 +1364,13 @@ impl AliasManager {
                 None => "",
             };
 
+            let save_annotation = match &chain_cmd.save_as {
+                Some(label) => format!("  {}[saving as '{}']{}", COLOR_GRAY, label, COLOR_RESET),
+                None => String::new(),
+            };
+
             println!(
-                "{}[{}/{}]{}{} Executing: {}{}{}",
+                "{}[{}/{}]{}{} Executing: {}{}{}{}",
                 COLOR_GRAY,
                 index + 1,
                 chain.commands.len(),
@@ -1367,7 +1378,8 @@ impl AliasManager {
                 op_desc,
                 COLOR_CYAN,
                 chain_cmd.command,
-                COLOR_RESET
+                COLOR_RESET,
+                save_annotation
             );
 
             last_exit_code = self
@@ -1377,6 +1389,10 @@ impl AliasManager {
                     // Treat this as exit code 127 (command not found) and continue
                     127
                 });
+
+            if let Some(ref label) = chain_cmd.save_as {
+                saved_codes.insert(label.clone(), last_exit_code);
+            }
         }
 
         println!(
@@ -5051,5 +5067,203 @@ mod tests {
             }
         }
         assert!(!validation_failed, "Valid back-reference should pass");
+    }
+
+    #[test]
+    fn test_execute_chain_with_saved_codes() {
+        // Chain: "echo first" --save result --if-saved result=0 "echo second"
+        // first cmd exits 0, saved as "result", second cmd runs because result==0
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                    save_as: Some("result".to_string()),
+                },
+                ChainCommand {
+                    command: "echo second".to_string(),
+                    operator: Some(ChainOperator::IfSaved {
+                        name: "result".to_string(),
+                        code: 0,
+                    }),
+                    save_as: None,
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2, "both commands should run");
+    }
+
+    #[test]
+    fn test_execute_chain_if_saved_skips_on_mismatch() {
+        // Chain: "cmd1" exits 1 --save result --if-saved result=0 "cmd2"
+        // first cmd exits 1, saved as "result", second cmd skipped because result!=0
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(1)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                    save_as: Some("result".to_string()),
+                },
+                ChainCommand {
+                    command: "echo skipped".to_string(),
+                    operator: Some(ChainOperator::IfSaved {
+                        name: "result".to_string(),
+                        code: 0,
+                    }),
+                    save_as: None,
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "second command should be skipped");
+    }
+
+    #[test]
+    fn test_execute_chain_skipped_command_doesnt_save() {
+        // Chain: "cmd1" exits 1 --save x --and "cmd2" --save y --if-saved y=0 "cmd3"
+        // Step 1: exits 1, saved as "x"
+        // Step 2: skipped (And, previous failed), y is NOT saved
+        // Step 3: skipped (y was never saved)
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(1)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                    save_as: Some("x".to_string()),
+                },
+                ChainCommand {
+                    command: "echo second".to_string(),
+                    operator: Some(ChainOperator::And),
+                    save_as: Some("y".to_string()),
+                },
+                ChainCommand {
+                    command: "echo third".to_string(),
+                    operator: Some(ChainOperator::IfSaved {
+                        name: "y".to_string(),
+                        code: 0,
+                    }),
+                    save_as: None,
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "only first command should run");
+    }
+
+    #[test]
+    fn test_execute_chain_last_exit_code_unchanged_on_if_saved_skip() {
+        // Chain: "cmd1" exits 0 --save x --always "cmd2" exits 0
+        //        --if-saved x=99 "cmd3" --and "cmd4"
+        // Step 1: exits 0, saved as x. last_exit_code = 0
+        // Step 2: exits 0 (always). last_exit_code = 0
+        // Step 3: if-saved x=99 -- x is 0, not 99, so SKIPPED. last_exit_code stays 0
+        // Step 4: And checks last_exit_code==0, which is true, so runs
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Ok(0), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                    save_as: Some("x".to_string()),
+                },
+                ChainCommand {
+                    command: "echo second".to_string(),
+                    operator: Some(ChainOperator::Always),
+                    save_as: None,
+                },
+                ChainCommand {
+                    command: "echo skipped".to_string(),
+                    operator: Some(ChainOperator::IfSaved {
+                        name: "x".to_string(),
+                        code: 99,
+                    }),
+                    save_as: None,
+                },
+                ChainCommand {
+                    command: "echo fourth".to_string(),
+                    operator: Some(ChainOperator::And),
+                    save_as: None,
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(
+            calls.len(),
+            3,
+            "cmd3 skipped, but cmd4 runs because last_exit_code is still 0"
+        );
+    }
+
+    #[test]
+    fn test_execute_chain_duplicate_save_last_write_wins() {
+        // Chain: "cmd1" exits 0 --save x --always "cmd2" exits 1 --save x
+        //        --if-saved x=1 "cmd3"
+        // Step 1: exits 0, saved x=0
+        // Step 2: exits 1 (always), saved x=1 (overwrites)
+        // Step 3: if-saved x=1 -- x is now 1, so runs
+        let (manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(vec![Ok(0), Ok(1), Ok(0)], Vec::new());
+
+        let chain = CommandChain {
+            commands: vec![
+                ChainCommand {
+                    command: "echo first".to_string(),
+                    operator: None,
+                    save_as: Some("x".to_string()),
+                },
+                ChainCommand {
+                    command: "echo second".to_string(),
+                    operator: Some(ChainOperator::Always),
+                    save_as: Some("x".to_string()),
+                },
+                ChainCommand {
+                    command: "echo third".to_string(),
+                    operator: Some(ChainOperator::IfSaved {
+                        name: "x".to_string(),
+                        code: 1,
+                    }),
+                    save_as: None,
+                },
+            ],
+            parallel: false,
+        };
+
+        let result = manager.execute_sequential_chain(&chain, &[]);
+        assert!(result.is_ok());
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3, "all three commands should run");
     }
 }
