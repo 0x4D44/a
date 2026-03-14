@@ -329,6 +329,10 @@ impl AliasEntry {
                         result.push_str(op_str);
                     }
                     result.push_str(&chain_cmd.command);
+                    if let Some(ref save_name) = chain_cmd.save_as {
+                        result.push('@');
+                        result.push_str(save_name);
+                    }
                 }
                 if chain.parallel {
                     format!("PARALLEL: {}", result)
@@ -1090,17 +1094,28 @@ impl AliasManager {
             if let CommandType::Chain(chain) = &entry.command_type {
                 println!("{}Command breakdown:{}", COLOR_CYAN, COLOR_RESET);
                 for (i, chain_cmd) in chain.commands.iter().enumerate() {
-                    let op_desc = match &chain_cmd.operator {
-                        Some(ChainOperator::And) => " (run if previous succeeded)",
-                        Some(ChainOperator::Or) => " (run if previous failed)",
-                        Some(ChainOperator::Always) => " (always run)",
+                    let op_part = match &chain_cmd.operator {
+                        Some(ChainOperator::And) => "run if previous succeeded",
+                        Some(ChainOperator::Or) => "run if previous failed",
+                        Some(ChainOperator::Always) => "always run",
                         Some(ChainOperator::IfCode(code)) => {
-                            &format!(" (run if previous exit code = {})", code)
+                            &format!("run if previous exit code = {}", code)
                         }
                         Some(ChainOperator::IfSaved { name, code }) => {
-                            &format!(" (run if '{}' == {})", name, code)
+                            &format!("run if '{}' == {}", name, code)
                         }
                         None => "",
+                    };
+                    let save_part = if let Some(ref save_name) = chain_cmd.save_as {
+                        format!("saves exit code as '{}'", save_name)
+                    } else {
+                        String::new()
+                    };
+                    let op_desc = match (op_part.is_empty(), save_part.is_empty()) {
+                        (true, true) => String::new(),
+                        (true, false) => format!(" ({})", save_part),
+                        (false, true) => format!(" ({})", op_part),
+                        (false, false) => format!(" ({}, {})", op_part, save_part),
                     };
                     let has_vars = if Self::has_parameter_variables(&chain_cmd.command) {
                         " 📋"
@@ -1745,6 +1760,14 @@ fn print_help(show_examples: bool) {
     println!(
         "  {}--if-code{} {}<N> <command>{}      Chain command (run if previous exit code = N)",
         COLOR_CYAN, COLOR_RESET, COLOR_GRAY, COLOR_RESET
+    );
+    println!(
+        "  {}--if-saved{} {}<name>=<N> <command>{}  Run if saved exit code <name> equals N",
+        COLOR_CYAN, COLOR_RESET, COLOR_GRAY, COLOR_RESET
+    );
+    println!(
+        "  {}--save{} {}<name>{}                    Save the exit code of the preceding step as <name>",
+        COLOR_YELLOW, COLOR_RESET, COLOR_GRAY, COLOR_RESET
     );
     println!(
         "  {}--parallel{}                   Execute all commands in parallel",
@@ -5265,5 +5288,79 @@ mod tests {
 
         let calls = runner.calls();
         assert_eq!(calls.len(), 3, "all three commands should run");
+    }
+
+    #[test]
+    fn test_command_display_with_save_as() {
+        let entry = AliasEntry {
+            command_type: CommandType::Chain(CommandChain {
+                commands: vec![
+                    ChainCommand {
+                        command: "tollens stop".to_string(),
+                        operator: None,
+                        save_as: Some("was_running".to_string()),
+                    },
+                    ChainCommand {
+                        command: "cargo build --release".to_string(),
+                        operator: Some(ChainOperator::Always),
+                        save_as: None,
+                    },
+                    ChainCommand {
+                        command: "tollens start".to_string(),
+                        operator: Some(ChainOperator::IfSaved {
+                            name: "was_running".to_string(),
+                            code: 0,
+                        }),
+                        save_as: None,
+                    },
+                ],
+                parallel: false,
+            }),
+            description: None,
+            created: "2026-03-14".to_string(),
+        };
+        let display = entry.command_display();
+        assert!(
+            display.contains("tollens stop@was_running"),
+            "Should show save annotation: got {}",
+            display
+        );
+        assert!(
+            display.contains("?s[was_running=0]"),
+            "Should show IfSaved operator: got {}",
+            display
+        );
+        assert!(
+            display.contains("tollens start"),
+            "Should contain the command: got {}",
+            display
+        );
+    }
+
+    #[test]
+    fn test_command_display_without_save_as() {
+        // Existing chain without save_as should display unchanged
+        let entry = AliasEntry {
+            command_type: CommandType::Chain(CommandChain {
+                commands: vec![
+                    ChainCommand {
+                        command: "cargo build".to_string(),
+                        operator: None,
+                        save_as: None,
+                    },
+                    ChainCommand {
+                        command: "mdrcp".to_string(),
+                        operator: Some(ChainOperator::And),
+                        save_as: None,
+                    },
+                ],
+                parallel: false,
+            }),
+            description: None,
+            created: "2026-03-14".to_string(),
+        };
+        let display = entry.command_display();
+        assert_eq!(display, "cargo build && mdrcp");
+        assert!(!display.contains('@'), "No @ annotation without save_as");
     }
 }
