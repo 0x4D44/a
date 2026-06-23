@@ -1,11 +1,39 @@
 {
   "aliases": {
-    "dn": {
+    "gc": {
       "command_type": {
-        "Simple": "mddelrsv -r nul"
+        "Simple": "git clone https://github.com/0x4D44/$1"
       },
       "description": null,
-      "created": "2026-01-24"
+      "created": "2025-10-20"
+    },
+    "mdf": {
+      "command_type": {
+        "Simple": "mdcode gh_fetch ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "clp": {
+      "command_type": {
+        "Simple": "npm update -g @anthropic-ai/claude-code"
+      },
+      "description": null,
+      "created": "2025-12-23"
+    },
+    "clvb": {
+      "command_type": {
+        "Simple": "cargo +nightly llvm-cov --branch"
+      },
+      "description": null,
+      "created": "2026-01-09"
+    },
+    "cor": {
+      "command_type": {
+        "Simple": "codex --dangerously-bypass-approvals-and-sandbox resume --last"
+      },
+      "description": "Resume latest Codex session",
+      "created": "2026-06-23"
     },
     "kl": {
       "command_type": {
@@ -14,23 +42,23 @@
       "description": null,
       "created": "2025-08-25"
     },
-    "mdd": {
+    "gst": {
       "command_type": {
-        "Simple": "mdcode diff ."
-      },
-      "description": null,
-      "created": "2025-09-01"
-    },
-    "mdp": {
-      "command_type": {
-        "Simple": "mdcode gh_push ."
+        "Simple": "git status --porcelain"
       },
       "description": null,
       "created": "2025-06-23"
     },
-    "gst": {
+    "mddr": {
       "command_type": {
-        "Simple": "git status --porcelain"
+        "Simple": "mdcode diff . 0 1"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mds": {
+      "command_type": {
+        "Simple": "mdcode gh_sync ."
       },
       "description": null,
       "created": "2025-06-23"
@@ -42,16 +70,84 @@
       "description": null,
       "created": "2025-06-23"
     },
-    "clt": {
+    "ctb": {
       "command_type": {
-        "Simple": "claude --permission-mode bypassPermissions --teammate-mode tmux"
+        "Chain": {
+          "commands": [
+            {
+              "command": "cargo tauri build",
+              "operator": null
+            },
+            {
+              "command": "mdrcp",
+              "operator": "And"
+            }
+          ],
+          "parallel": false
+        }
       },
       "description": null,
-      "created": "2026-02-09"
+      "created": "2026-01-04"
     },
-    "mdu": {
+    "ls": {
       "command_type": {
-        "Simple": "mdcode update ."
+        "Simple": "ls -la"
+      },
+      "description": "List files with details",
+      "created": "2025-06-23"
+    },
+    "dn": {
+      "command_type": {
+        "Simple": "mddelrsv -r nul"
+      },
+      "description": null,
+      "created": "2026-01-24"
+    },
+    "mytest": {
+      "command_type": {
+        "Simple": "echo hello world"
+      },
+      "description": "Test command",
+      "created": "2025-06-23"
+    },
+    "mdi": {
+      "command_type": {
+        "Simple": "mdcode info ."
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mdd": {
+      "command_type": {
+        "Simple": "mdcode diff ."
+      },
+      "description": null,
+      "created": "2025-09-01"
+    },
+    "mdt": {
+      "command_type": {
+        "Simple": "mdcode tag ."
+      },
+      "description": null,
+      "created": "2025-09-07"
+    },
+    "cbt": {
+      "command_type": {
+        "Simple": "cargo test"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "dir": {
+      "command_type": {
+        "Simple": "dir /b"
+      },
+      "description": null,
+      "created": "2025-06-23"
+    },
+    "mdp": {
+      "command_type": {
+        "Simple": "mdcode gh_push ."
       },
       "description": null,
       "created": "2025-06-23"
@@ -63,12 +159,26 @@
       "description": null,
       "created": "2025-06-23"
     },
-    "cbt": {
+    "cl": {
       "command_type": {
-        "Simple": "cargo test"
+        "Simple": "claude --permission-mode bypassPermissions --system-prompt \".\""
       },
       "description": null,
-      "created": "2025-06-23"
+      "created": "2026-05-10"
+    },
+    "clt": {
+      "command_type": {
+        "Simple": "claude --permission-mode bypassPermissions --teammate-mode tmux"
+      },
+      "description": null,
+      "created": "2026-02-09"
+    },
+    "gs": {
+      "command_type": {
+        "Simple": "git status"
+      },
+      "description": null,
+      "created": "2026-01-24"
     },
     "mddl": {
       "command_type": {
@@ -77,12 +187,19 @@
       "description": null,
       "created": "2025-06-23"
     },
-    "ge": {
+    "co": {
       "command_type": {
-        "Simple": "gemini -y"
+        "Simple": "codex --dangerously-bypass-approvals-and-sandbox"
       },
       "description": null,
-      "created": "2025-12-09"
+      "created": "2025-11-18"
+    },
+    "clv": {
+      "command_type": {
+        "Simple": "cargo llvm-cov"
+      },
+      "description": null,
+      "created": "2025-12-19"
     },
     "cup": {
       "command_type": {
@@ -107,13 +224,6 @@
       "description": null,
       "created": "2025-10-30"
     },
-    "clp": {
-      "command_type": {
-        "Simple": "npm update -g @anthropic-ai/claude-code"
-      },
-      "description": null,
-      "created": "2025-12-23"
-    },
     "cb": {
       "command_type": {
         "Chain": {
@@ -133,80 +243,19 @@
       "description": null,
       "created": "2025-11-10"
     },
-    "gp": {
+    "mdu": {
       "command_type": {
-        "Simple": "git pull"
-      },
-      "description": null,
-      "created": "2025-11-09"
-    },
-    "mddr": {
-      "command_type": {
-        "Simple": "mdcode diff . 0 1"
+        "Simple": "mdcode update ."
       },
       "description": null,
       "created": "2025-06-23"
     },
-    "mdt": {
+    "ge": {
       "command_type": {
-        "Simple": "mdcode tag ."
+        "Simple": "gemini -y"
       },
       "description": null,
-      "created": "2025-09-07"
-    },
-    "mdi": {
-      "command_type": {
-        "Simple": "mdcode info ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "clvb": {
-      "command_type": {
-        "Simple": "cargo +nightly llvm-cov --branch"
-      },
-      "description": null,
-      "created": "2026-01-09"
-    },
-    "mds": {
-      "command_type": {
-        "Simple": "mdcode gh_sync ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "gc": {
-      "command_type": {
-        "Simple": "git clone https://github.com/0x4D44/$1"
-      },
-      "description": null,
-      "created": "2025-10-20"
-    },
-    "ctb": {
-      "command_type": {
-        "Chain": {
-          "commands": [
-            {
-              "command": "cargo tauri build",
-              "operator": null
-            },
-            {
-              "command": "mdrcp",
-              "operator": "And"
-            }
-          ],
-          "parallel": false
-        }
-      },
-      "description": null,
-      "created": "2026-01-04"
-    },
-    "clv": {
-      "command_type": {
-        "Simple": "cargo llvm-cov"
-      },
-      "description": null,
-      "created": "2025-12-19"
+      "created": "2025-12-09"
     },
     "tagp": {
       "command_type": {
@@ -227,48 +276,6 @@
       "description": null,
       "created": "2025-09-04"
     },
-    "mdf": {
-      "command_type": {
-        "Simple": "mdcode gh_fetch ."
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "mytest": {
-      "command_type": {
-        "Simple": "echo hello world"
-      },
-      "description": "Test command",
-      "created": "2025-06-23"
-    },
-    "ls": {
-      "command_type": {
-        "Simple": "ls -la"
-      },
-      "description": "List files with details",
-      "created": "2025-06-23"
-    },
-    "gs": {
-      "command_type": {
-        "Simple": "git status"
-      },
-      "description": null,
-      "created": "2026-01-24"
-    },
-    "dir": {
-      "command_type": {
-        "Simple": "dir /b"
-      },
-      "description": null,
-      "created": "2025-06-23"
-    },
-    "co": {
-      "command_type": {
-        "Simple": "codex --dangerously-bypass-approvals-and-sandbox"
-      },
-      "description": null,
-      "created": "2025-11-18"
-    },
     "ntd": {
       "command_type": {
         "Simple": "npm run tauri dev"
@@ -276,12 +283,12 @@
       "description": null,
       "created": "2026-01-04"
     },
-    "cl": {
+    "gp": {
       "command_type": {
-        "Simple": "claude --permission-mode bypassPermissions --system-prompt \".\""
+        "Simple": "git pull"
       },
       "description": null,
-      "created": "2026-05-10"
+      "created": "2025-11-09"
     }
   }
 }
