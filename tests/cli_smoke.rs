@@ -6,10 +6,15 @@ use std::path::PathBuf;
 
 fn command_with_home() -> (Command, TempDir) {
     let temp_home = TempDir::new().expect("create temp home");
+    let cmd = command_for_home(&temp_home);
+    (cmd, temp_home)
+}
+
+fn command_for_home(temp_home: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("a").expect("binary exists");
     cmd.env("HOME", temp_home.path());
     cmd.env("USERPROFILE", temp_home.path());
-    (cmd, temp_home)
+    cmd
 }
 
 fn alias_config_path(home: &TempDir) -> PathBuf {
@@ -186,6 +191,84 @@ fn list_aliases_shows_formatted_entries() {
         .stdout(predicate::str::contains("Configured aliases"))
         .stdout(predicate::str::contains("deploy"))
         .stdout(predicate::str::contains("Deploy to production"));
+}
+
+#[test]
+fn platform_alias_cli_adds_lists_which_and_removes_variant() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _ = alias_config_path(&temp_home);
+
+    let mut add = command_for_home(&temp_home);
+    add.args(["--add", "co", "codex"]).assert().success();
+
+    let mut platform_add = command_for_home(&temp_home);
+    platform_add
+        .args(["--platform-add", "co", "current", "a-tmux codex"])
+        .assert()
+        .success();
+
+    let mut update_default = command_for_home(&temp_home);
+    update_default
+        .args(["--add", "co", "codex --new-default", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Platform variants preserved"));
+
+    let mut list = command_for_home(&temp_home);
+    list.arg("--list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("co"))
+        .stdout(predicate::str::contains("a-tmux codex"))
+        .stdout(predicate::str::contains("[platform:"));
+
+    let mut which = command_for_home(&temp_home);
+    which
+        .args(["--which", "co"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Default:"))
+        .stdout(predicate::str::contains("codex"))
+        .stdout(predicate::str::contains("Platform variants:"))
+        .stdout(predicate::str::contains("a-tmux codex"));
+
+    let mut platform_remove = command_for_home(&temp_home);
+    platform_remove
+        .args(["--platform-remove", "co", "current"])
+        .assert()
+        .success();
+
+    let mut list_after_remove = command_for_home(&temp_home);
+    list_after_remove
+        .arg("--list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("codex"))
+        .stdout(predicate::str::contains("a-tmux codex").not());
+}
+
+#[test]
+fn execute_alias_uses_current_platform_override() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _ = alias_config_path(&temp_home);
+
+    let mut add = command_for_home(&temp_home);
+    add.args(["--add", "tool", "definitely-not-a-real-binary"])
+        .assert()
+        .success();
+
+    let mut platform_add = command_for_home(&temp_home);
+    platform_add
+        .args(["--platform-add", "tool", "current", "cargo --version"])
+        .assert()
+        .success();
+
+    let mut execute = command_for_home(&temp_home);
+    execute
+        .arg("tool")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cargo"));
 }
 
 #[test]

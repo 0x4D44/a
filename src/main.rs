@@ -1,7 +1,8 @@
 use base64::Engine;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -9,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-const VERSION: &str = "1.6.0";
+const VERSION: &str = "1.6.1";
 // Hardcoded GitHub target for config sync
 const GITHUB_REPO: &str = "0x4d44/a"; // owner/repo
 const GITHUB_BRANCH: &str = "main";
@@ -24,7 +25,7 @@ const COLOR_CYAN: &str = "\x1b[36m";
 const COLOR_YELLOW: &str = "\x1b[33m";
 const COLOR_GRAY: &str = "\x1b[90m";
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum ChainOperator {
     And,         // && - run if previous succeeded
     Or,          // || - run if previous failed
@@ -33,7 +34,7 @@ enum ChainOperator {
     IfSaved { name: String, code: i32 },
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ChainCommand {
     command: String,
     operator: Option<ChainOperator>, // None for the first command
@@ -42,21 +43,77 @@ struct ChainCommand {
     save_as: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct CommandChain {
     commands: Vec<ChainCommand>,
     parallel: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum CommandType {
     Simple(String),      // Single command (backward compatibility)
     Chain(CommandChain), // Complex command chain
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+enum Platform {
+    Windows,
+    Macos,
+    Linux,
+}
+
+impl Platform {
+    fn current() -> Option<Self> {
+        Self::from_os_name(env::consts::OS)
+    }
+
+    fn parse(input: &str) -> Result<Self, String> {
+        if input.eq_ignore_ascii_case("current") {
+            return Self::current().ok_or_else(|| {
+                format!(
+                    "Current platform '{}' is not supported; expected windows, macos, or linux",
+                    env::consts::OS
+                )
+            });
+        }
+
+        Self::from_os_name(&input.to_ascii_lowercase()).ok_or_else(|| {
+            format!(
+                "Invalid platform '{}': expected windows, macos, linux, or current",
+                input
+            )
+        })
+    }
+
+    fn from_os_name(os: &str) -> Option<Self> {
+        match os {
+            "windows" => Some(Self::Windows),
+            "macos" => Some(Self::Macos),
+            "linux" => Some(Self::Linux),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Platform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+            Self::Linux => "linux",
+        };
+        f.write_str(name)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct AliasEntry {
     command_type: CommandType,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    platforms: BTreeMap<Platform, CommandType>,
     description: Option<String>,
     created: String,
 }
@@ -307,26 +364,26 @@ impl GitHubClient for UreqGitHubClient {
     }
 }
 
-impl AliasEntry {
-    // Helper method to get command string for display (backward compatibility)
-    fn command_display(&self) -> String {
-        match &self.command_type {
+impl CommandType {
+    fn display(&self) -> String {
+        match self {
             CommandType::Simple(cmd) => cmd.clone(),
             CommandType::Chain(chain) => {
                 let mut result = String::new();
                 for (i, chain_cmd) in chain.commands.iter().enumerate() {
                     if i > 0 {
-                        let op_str = match &chain_cmd.operator {
-                            Some(ChainOperator::And) => " && ",
-                            Some(ChainOperator::Or) => " || ",
-                            Some(ChainOperator::Always) => " ; ",
-                            Some(ChainOperator::IfCode(code)) => &format!(" ?[{}] ", code),
-                            Some(ChainOperator::IfSaved { name, code }) => {
-                                &format!(" ?s[{}={}] ", name, code)
+                        match &chain_cmd.operator {
+                            Some(ChainOperator::And) => result.push_str(" && "),
+                            Some(ChainOperator::Or) => result.push_str(" || "),
+                            Some(ChainOperator::Always) => result.push_str(" ; "),
+                            Some(ChainOperator::IfCode(code)) => {
+                                result.push_str(&format!(" ?[{}] ", code));
                             }
-                            None => " ",
+                            Some(ChainOperator::IfSaved { name, code }) => {
+                                result.push_str(&format!(" ?s[{}={}] ", name, code));
+                            }
+                            None => result.push(' '),
                         };
-                        result.push_str(op_str);
                     }
                     result.push_str(&chain_cmd.command);
                     if let Some(ref save_name) = chain_cmd.save_as {
@@ -341,6 +398,36 @@ impl AliasEntry {
                 }
             }
         }
+    }
+}
+
+impl AliasEntry {
+    // Helper method to get the default command string for display (backward compatibility)
+    fn command_display(&self) -> String {
+        self.command_type.display()
+    }
+
+    fn command_type_for_platform(&self, platform: Platform) -> &CommandType {
+        self.platforms.get(&platform).unwrap_or(&self.command_type)
+    }
+
+    fn active_command_type(&self) -> &CommandType {
+        match Platform::current() {
+            Some(platform) => self.command_type_for_platform(platform),
+            None => &self.command_type,
+        }
+    }
+
+    fn active_platform_override(&self) -> Option<Platform> {
+        Platform::current().filter(|platform| self.platforms.contains_key(platform))
+    }
+
+    fn platform_list(&self) -> String {
+        self.platforms
+            .keys()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -375,14 +462,57 @@ impl Config {
             return Ok(false); // Signal that confirmation is needed
         }
 
+        let platforms = self
+            .aliases
+            .get(&name)
+            .map(|entry| entry.platforms.clone())
+            .unwrap_or_default();
+
         let entry = AliasEntry {
             command_type,
+            platforms,
             description,
             created: chrono::Utc::now().format("%Y-%m-%d").to_string(),
         };
 
         self.aliases.insert(name, entry);
         Ok(true) // Successfully added/updated
+    }
+
+    fn add_platform_alias(
+        &mut self,
+        name: &str,
+        platform: Platform,
+        command_type: CommandType,
+        force: bool,
+    ) -> Result<bool, String> {
+        let entry = self
+            .aliases
+            .get_mut(name)
+            .ok_or_else(|| format!("Alias '{}' not found", name))?;
+
+        if entry.platforms.contains_key(&platform) && !force {
+            return Ok(false);
+        }
+
+        entry.platforms.insert(platform, command_type);
+        Ok(true)
+    }
+
+    fn remove_platform_alias(&mut self, name: &str, platform: Platform) -> Result<(), String> {
+        let entry = self
+            .aliases
+            .get_mut(name)
+            .ok_or_else(|| format!("Alias '{}' not found", name))?;
+
+        if entry.platforms.remove(&platform).is_some() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Alias '{}' has no {} platform variant",
+                name, platform
+            ))
+        }
     }
 
     fn remove_alias(&mut self, name: &str) -> Result<(), String> {
@@ -666,13 +796,18 @@ impl AliasManager {
         let content =
             fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {}", e))?;
 
-        // Try to parse as new format first
-        match serde_json::from_str::<Config>(&content) {
+        Self::parse_config_content(&content)
+    }
+
+    fn parse_config_content(content: &str) -> Result<Config, String> {
+        match serde_json::from_str::<Config>(content) {
             Ok(config) => Ok(config),
-            Err(_) => {
-                // Try to parse as legacy format and migrate
-                Self::migrate_legacy_config(&content)
-            }
+            Err(config_error) => Self::migrate_legacy_config(content).map_err(|legacy_error| {
+                format!(
+                    "Failed to parse config file: {}; legacy migration also failed: {}",
+                    config_error, legacy_error
+                )
+            }),
         }
     }
 
@@ -705,6 +840,7 @@ impl AliasManager {
 
             let new_entry = AliasEntry {
                 command_type,
+                platforms: BTreeMap::new(),
                 description: legacy_entry.description,
                 created: legacy_entry.created,
             };
@@ -850,8 +986,8 @@ impl AliasManager {
             .map_err(|e| format!("Failed to decode content: {}", e))?;
         let text = String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8 content: {}", e))?;
 
-        let parsed: Config = serde_json::from_str(&text)
-            .map_err(|e| format!("Downloaded config is invalid JSON: {}", e))?;
+        let parsed = Self::parse_config_content(&text)
+            .map_err(|e| format!("Downloaded config is invalid: {}", e))?;
 
         if self.config_path.exists() {
             let mut backup_path = self.config_path.clone();
@@ -893,6 +1029,11 @@ impl AliasManager {
     ) -> Result<(), String> {
         // Check if alias already exists before making changes
         let alias_existed = self.config.aliases.contains_key(&name);
+        let preserved_platforms = self
+            .config
+            .get_alias(&name)
+            .filter(|entry| !entry.platforms.is_empty())
+            .map(AliasEntry::platform_list);
 
         // Check if alias exists and get confirmation if needed
         let confirmed_force = if alias_existed && !force {
@@ -938,6 +1079,12 @@ impl AliasManager {
                 self.save_config()?;
                 if alias_existed {
                     println!("{}Updated alias '{}'{}", COLOR_GREEN, name, COLOR_RESET);
+                    if let Some(platforms) = preserved_platforms {
+                        println!(
+                            "{}Platform variants preserved: {}. Use --platform-add to update platform-specific commands.{}",
+                            COLOR_GRAY, platforms, COLOR_RESET
+                        );
+                    }
                 } else {
                     println!("{}Added alias '{}'{}", COLOR_GREEN, name, COLOR_RESET);
                 }
@@ -949,6 +1096,84 @@ impl AliasManager {
             }
             Err(e) => Err(e),
         }
+    }
+
+    fn add_platform_alias(
+        &mut self,
+        name: String,
+        platform: Platform,
+        command_type: CommandType,
+        description: Option<String>,
+        force: bool,
+    ) -> Result<(), String> {
+        let existing = self
+            .config
+            .get_alias(&name)
+            .ok_or_else(|| format!("Alias '{}' not found", name))?;
+        let platform_existed = existing.platforms.contains_key(&platform);
+
+        let confirmed_force = if platform_existed && !force {
+            let current = existing
+                .platforms
+                .get(&platform)
+                .expect("checked platform exists");
+            println!(
+                "{}Alias '{}' already has a {} variant:{}",
+                COLOR_YELLOW, name, platform, COLOR_RESET
+            );
+            println!(
+                "  {}Current:{} {}",
+                COLOR_CYAN,
+                COLOR_RESET,
+                current.display()
+            );
+            println!(
+                "  {}New:{} {}",
+                COLOR_CYAN,
+                COLOR_RESET,
+                command_type.display()
+            );
+
+            if !Self::confirm_overwrite()? {
+                println!("{}Platform alias not modified.{}", COLOR_GRAY, COLOR_RESET);
+                return Ok(());
+            }
+            true
+        } else {
+            force
+        };
+
+        if !self
+            .config
+            .add_platform_alias(&name, platform, command_type, confirmed_force)?
+        {
+            return Err("Unexpected platform confirmation state".to_string());
+        }
+
+        if let Some(desc) = description {
+            if let Some(entry) = self.config.aliases.get_mut(&name) {
+                entry.description = Some(desc);
+            }
+        }
+
+        self.save_config()?;
+        if platform_existed {
+            println!(
+                "{}Updated {} platform variant for '{}'{}",
+                COLOR_GREEN, platform, name, COLOR_RESET
+            );
+        } else {
+            println!(
+                "{}Added {} platform variant for '{}'{}",
+                COLOR_GREEN, platform, name, COLOR_RESET
+            );
+        }
+        Ok(())
+    }
+
+    fn remove_platform_alias(&mut self, name: &str, platform: Platform) -> Result<(), String> {
+        self.config.remove_platform_alias(name, platform)?;
+        self.save_config()
     }
 
     fn confirm_overwrite() -> Result<bool, String> {
@@ -1022,12 +1247,23 @@ impl AliasManager {
                 COLOR_RESET,
                 spaces,
                 COLOR_BLUE,
-                entry.command_display(),
+                entry.active_command_type().display(),
                 COLOR_RESET
             );
 
             if let Some(desc) = &entry.description {
                 print!(" {}({}){}", COLOR_GRAY, desc, COLOR_RESET);
+            }
+
+            if let Some(platform) = entry.active_platform_override() {
+                print!(" {}[platform: {}]{}", COLOR_GRAY, platform, COLOR_RESET);
+            } else if !entry.platforms.is_empty() {
+                print!(
+                    " {}[variants: {}]{}",
+                    COLOR_GRAY,
+                    entry.platform_list(),
+                    COLOR_RESET
+                );
             }
 
             println!(" {}[{}]{}", COLOR_GRAY, entry.created, COLOR_RESET);
@@ -1036,19 +1272,54 @@ impl AliasManager {
 
     fn which_alias(&self, name: &str) {
         if let Some(entry) = self.config.get_alias(name) {
+            let active_command = entry.active_command_type();
             println!(
                 "{}Alias '{}' executes:{} {}",
                 COLOR_CYAN,
                 name,
                 COLOR_RESET,
-                entry.command_display()
+                active_command.display()
             );
             if let Some(desc) = &entry.description {
                 println!("{}Description:{} {}", COLOR_CYAN, COLOR_RESET, desc);
             }
 
+            println!(
+                "{}Default:{} {}",
+                COLOR_CYAN,
+                COLOR_RESET,
+                entry.command_display()
+            );
+            if !entry.platforms.is_empty() {
+                println!("{}Platform variants:{}", COLOR_CYAN, COLOR_RESET);
+                let current = Platform::current();
+                for (platform, command_type) in &entry.platforms {
+                    let marker = if Some(*platform) == current {
+                        " (current)"
+                    } else {
+                        ""
+                    };
+                    println!(
+                        "  {}{}{}{} -> {}",
+                        COLOR_GREEN,
+                        platform,
+                        COLOR_RESET,
+                        marker,
+                        command_type.display()
+                    );
+                }
+                if let Some(platform) = current {
+                    if !entry.platforms.contains_key(&platform) {
+                        println!(
+                            "  {}current platform '{}' uses default{}",
+                            COLOR_GRAY, platform, COLOR_RESET
+                        );
+                    }
+                }
+            }
+
             // Check if any commands contain parameter variables
-            let has_variables = match &entry.command_type {
+            let has_variables = match active_command {
                 CommandType::Simple(cmd) => Self::has_parameter_variables(cmd),
                 CommandType::Chain(chain) => chain
                     .commands
@@ -1064,7 +1335,7 @@ impl AliasManager {
                 );
                 let example_args = vec!["arg1".to_string(), "arg2".to_string(), "arg3".to_string()];
 
-                match &entry.command_type {
+                match active_command {
                     CommandType::Simple(cmd) => {
                         let resolved = Self::substitute_parameters(cmd, &example_args);
                         println!(
@@ -1091,7 +1362,7 @@ impl AliasManager {
             }
 
             // Show detailed breakdown for complex chains
-            if let CommandType::Chain(chain) = &entry.command_type {
+            if let CommandType::Chain(chain) = active_command {
                 println!("{}Command breakdown:{}", COLOR_CYAN, COLOR_RESET);
                 for (i, chain_cmd) in chain.commands.iter().enumerate() {
                     let op_part = match &chain_cmd.operator {
@@ -1214,8 +1485,29 @@ impl AliasManager {
             .config
             .get_alias(name)
             .ok_or_else(|| format!("Alias '{}' not found", name))?;
+        self.execute_command_type(entry.active_command_type(), args)
+    }
 
-        match &entry.command_type {
+    #[cfg(test)]
+    fn execute_alias_for_platform(
+        &self,
+        name: &str,
+        args: &[String],
+        platform: Platform,
+    ) -> Result<(), String> {
+        let entry = self
+            .config
+            .get_alias(name)
+            .ok_or_else(|| format!("Alias '{}' not found", name))?;
+        self.execute_command_type(entry.command_type_for_platform(platform), args)
+    }
+
+    fn execute_command_type(
+        &self,
+        command_type: &CommandType,
+        args: &[String],
+    ) -> Result<(), String> {
+        match command_type {
             CommandType::Simple(command) => {
                 // Check if this is a legacy chained command (contains &&)
                 if command.contains(" && ") {
@@ -1688,6 +1980,14 @@ fn print_help(show_examples: bool) {
         COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
     );
     println!(
+        "  {}a{} {}--platform-add <n> <platform> <command> [OPTIONS]{}",
+        COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
+    );
+    println!(
+        "  {}a{} {}--platform-remove <n> <platform>{}",
+        COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
+    );
+    println!(
         "  {}a{} {}--list [filter]{}            List aliases (optionally filtered)",
         COLOR_GREEN, COLOR_RESET, COLOR_BLUE, COLOR_RESET
     );
@@ -1741,6 +2041,10 @@ fn print_help(show_examples: bool) {
     println!(
         "  {}--chain{} {}<command>{}            Legacy: Chain with && (same as --and)",
         COLOR_YELLOW, COLOR_RESET, COLOR_GRAY, COLOR_RESET
+    );
+    println!(
+        "  {}<platform>{}                   windows, macos, linux, or current",
+        COLOR_YELLOW, COLOR_RESET
     );
     println!();
 
@@ -1965,6 +2269,169 @@ fn parse_name_code(s: &str) -> Result<(String, i32), String> {
     Ok((name.to_string(), code))
 }
 
+#[derive(Debug)]
+struct ParsedCommandSpec {
+    command_type: CommandType,
+    description: Option<String>,
+    force: bool,
+}
+
+fn parse_command_spec(args: &[String]) -> Result<ParsedCommandSpec, String> {
+    if args.is_empty() {
+        return Err("Missing command".to_string());
+    }
+
+    let mut description = None;
+    let mut force = false;
+    let mut parallel = false;
+    let mut commands = vec![ChainCommand {
+        command: args[0].clone(),
+        operator: None,
+        save_as: None,
+    }];
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--desc" => {
+                if i + 1 < args.len() {
+                    description = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    return Err("--desc requires a description".to_string());
+                }
+            }
+            "--force" => {
+                force = true;
+                i += 1;
+            }
+            "--parallel" => {
+                parallel = true;
+                i += 1;
+            }
+            "--chain" | "--and" => {
+                if i + 1 < args.len() {
+                    commands.push(ChainCommand {
+                        command: args[i + 1].clone(),
+                        operator: Some(ChainOperator::And),
+                        save_as: None,
+                    });
+                    i += 2;
+                } else {
+                    return Err(format!("{} requires a command", args[i]));
+                }
+            }
+            "--or" => {
+                if i + 1 < args.len() {
+                    commands.push(ChainCommand {
+                        command: args[i + 1].clone(),
+                        operator: Some(ChainOperator::Or),
+                        save_as: None,
+                    });
+                    i += 2;
+                } else {
+                    return Err("--or requires a command".to_string());
+                }
+            }
+            "--always" => {
+                if i + 1 < args.len() {
+                    commands.push(ChainCommand {
+                        command: args[i + 1].clone(),
+                        operator: Some(ChainOperator::Always),
+                        save_as: None,
+                    });
+                    i += 2;
+                } else {
+                    return Err("--always requires a command".to_string());
+                }
+            }
+            "--if-code" => {
+                if i + 2 < args.len() {
+                    let code = args[i + 1]
+                        .parse::<i32>()
+                        .map_err(|_| "--if-code requires a numeric exit code".to_string())?;
+                    commands.push(ChainCommand {
+                        command: args[i + 2].clone(),
+                        operator: Some(ChainOperator::IfCode(code)),
+                        save_as: None,
+                    });
+                    i += 3;
+                } else {
+                    return Err("--if-code requires an exit code and a command".to_string());
+                }
+            }
+            "--save" => {
+                if i + 1 >= args.len() {
+                    return Err("--save requires a name".to_string());
+                }
+                let name = &args[i + 1];
+                if !is_valid_save_name(name) {
+                    return Err(format!(
+                        "save name must match [a-zA-Z_][a-zA-Z0-9_]*, got '{}'",
+                        name
+                    ));
+                }
+                match commands.last_mut() {
+                    Some(cmd) => cmd.save_as = Some(name.clone()),
+                    None => return Err("--save must follow a command".to_string()),
+                }
+                i += 2;
+            }
+            "--if-saved" => {
+                if i + 2 >= args.len() {
+                    return Err("--if-saved requires <name>=<code> and a command".to_string());
+                }
+                let (name, code) = parse_name_code(&args[i + 1])?;
+                commands.push(ChainCommand {
+                    command: args[i + 2].clone(),
+                    operator: Some(ChainOperator::IfSaved { name, code }),
+                    save_as: None,
+                });
+                i += 3;
+            }
+            _ => return Err(format!("Unknown option '{}'", args[i])),
+        }
+    }
+
+    if parallel {
+        let has_saves = commands.iter().any(|c| c.save_as.is_some());
+        let has_if_saved = commands
+            .iter()
+            .any(|c| matches!(c.operator, Some(ChainOperator::IfSaved { .. })));
+        if has_saves || has_if_saved {
+            return Err("--save and --if-saved cannot be used with --parallel".to_string());
+        }
+    }
+
+    let mut defined_saves: Vec<&str> = Vec::new();
+    for cmd in &commands {
+        if let Some(ChainOperator::IfSaved { ref name, .. }) = cmd.operator {
+            if !defined_saves.contains(&name.as_str()) {
+                return Err(format!(
+                    "--if-saved references '{}' but no prior --save defines it",
+                    name
+                ));
+            }
+        }
+        if let Some(ref save_name) = cmd.save_as {
+            defined_saves.push(save_name.as_str());
+        }
+    }
+
+    let has_save = commands.iter().any(|c| c.save_as.is_some());
+    let command_type = if commands.len() == 1 && !parallel && !has_save {
+        CommandType::Simple(commands[0].command.clone())
+    } else {
+        CommandType::Chain(CommandChain { commands, parallel })
+    };
+
+    Ok(ParsedCommandSpec {
+        command_type,
+        description,
+        force,
+    })
+}
+
 fn print_version() {
     println!(
         "{}{}🚀 Alias Manager v{}{}",
@@ -2099,224 +2566,98 @@ fn main() {
             }
 
             let name = args[2].clone();
-            let first_command = args[3].clone();
+            let spec = match parse_command_spec(&args[3..]) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    eprintln!("{}Error:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    std::process::exit(1);
+                }
+            };
 
-            let mut description = None;
-            let mut force = false;
-            let mut parallel = false;
-            let mut commands = vec![ChainCommand {
-                command: first_command,
-                operator: None, // First command has no operator
-                save_as: None,
-            }];
-
-            let mut i = 4;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--desc" => {
-                        if i + 1 < args.len() {
-                            description = Some(args[i + 1].clone());
-                            i += 2;
-                        } else {
-                            eprintln!(
-                                "{}Error:{} --desc requires a description",
-                                COLOR_YELLOW, COLOR_RESET
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-                    "--force" => {
-                        force = true;
-                        i += 1;
-                    }
-                    "--parallel" => {
-                        parallel = true;
-                        i += 1;
-                    }
-                    "--chain" | "--and" => {
-                        if i + 1 < args.len() {
-                            commands.push(ChainCommand {
-                                command: args[i + 1].clone(),
-                                operator: Some(ChainOperator::And),
-                                save_as: None,
-                            });
-                            i += 2;
-                        } else {
-                            eprintln!(
-                                "{}Error:{} {} requires a command",
-                                COLOR_YELLOW, COLOR_RESET, args[i]
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-                    "--or" => {
-                        if i + 1 < args.len() {
-                            commands.push(ChainCommand {
-                                command: args[i + 1].clone(),
-                                operator: Some(ChainOperator::Or),
-                                save_as: None,
-                            });
-                            i += 2;
-                        } else {
-                            eprintln!(
-                                "{}Error:{} --or requires a command",
-                                COLOR_YELLOW, COLOR_RESET
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-                    "--always" => {
-                        if i + 1 < args.len() {
-                            commands.push(ChainCommand {
-                                command: args[i + 1].clone(),
-                                operator: Some(ChainOperator::Always),
-                                save_as: None,
-                            });
-                            i += 2;
-                        } else {
-                            eprintln!(
-                                "{}Error:{} --always requires a command",
-                                COLOR_YELLOW, COLOR_RESET
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-                    "--if-code" => {
-                        if i + 2 < args.len() {
-                            match args[i + 1].parse::<i32>() {
-                                Ok(code) => {
-                                    commands.push(ChainCommand {
-                                        command: args[i + 2].clone(),
-                                        operator: Some(ChainOperator::IfCode(code)),
-                                        save_as: None,
-                                    });
-                                    i += 3;
-                                }
-                                Err(_) => {
-                                    eprintln!(
-                                        "{}Error:{} --if-code requires a numeric exit code",
-                                        COLOR_YELLOW, COLOR_RESET
-                                    );
-                                    std::process::exit(1);
-                                }
-                            }
-                        } else {
-                            eprintln!(
-                                "{}Error:{} --if-code requires an exit code and a command",
-                                COLOR_YELLOW, COLOR_RESET
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-                    "--save" => {
-                        if i + 1 >= args.len() {
-                            eprintln!(
-                                "{}Error:{} --save requires a name",
-                                COLOR_YELLOW, COLOR_RESET
-                            );
-                            std::process::exit(1);
-                        }
-                        let name = &args[i + 1];
-                        if !is_valid_save_name(name) {
-                            eprintln!(
-                                "{}Error:{} save name must match [a-zA-Z_][a-zA-Z0-9_]*, got '{}'",
-                                COLOR_YELLOW, COLOR_RESET, name
-                            );
-                            std::process::exit(1);
-                        }
-                        match commands.last_mut() {
-                            Some(cmd) => {
-                                cmd.save_as = Some(name.clone());
-                            }
-                            None => {
-                                eprintln!(
-                                    "{}Error:{} --save must follow a command",
-                                    COLOR_YELLOW, COLOR_RESET
-                                );
-                                std::process::exit(1);
-                            }
-                        }
-                        i += 2;
-                    }
-                    "--if-saved" => {
-                        if i + 2 >= args.len() {
-                            eprintln!(
-                                "{}Error:{} --if-saved requires <name>=<code> and a command",
-                                COLOR_YELLOW, COLOR_RESET
-                            );
-                            std::process::exit(1);
-                        }
-                        match parse_name_code(&args[i + 1]) {
-                            Ok((name, code)) => {
-                                commands.push(ChainCommand {
-                                    command: args[i + 2].clone(),
-                                    operator: Some(ChainOperator::IfSaved { name, code }),
-                                    save_as: None,
-                                });
-                                i += 3;
-                            }
-                            Err(e) => {
-                                eprintln!("{}Error:{} {}", COLOR_YELLOW, COLOR_RESET, e);
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                    _ => {
-                        eprintln!(
-                            "{}Error:{} Unknown option '{}'",
-                            COLOR_YELLOW, COLOR_RESET, args[i]
-                        );
-                        std::process::exit(1);
-                    }
+            match manager.add_alias(
+                name.clone(),
+                spec.command_type,
+                spec.description,
+                spec.force,
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("{}Error adding alias:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    std::process::exit(1);
                 }
             }
+        }
 
-            // Validate: --save and --if-saved cannot be used with --parallel
-            if parallel {
-                let has_saves = commands.iter().any(|c| c.save_as.is_some());
-                let has_if_saved = commands
-                    .iter()
-                    .any(|c| matches!(c.operator, Some(ChainOperator::IfSaved { .. })));
-                if has_saves || has_if_saved {
+        "--platform-add" => {
+            if args.len() < 5 {
+                eprintln!(
+                    "{}Usage:{} a --platform-add <alias> <platform> <command> [OPTIONS]",
+                    COLOR_YELLOW, COLOR_RESET
+                );
+                std::process::exit(1);
+            }
+
+            let name = args[2].clone();
+            let platform = match Platform::parse(&args[3]) {
+                Ok(platform) => platform,
+                Err(e) => {
+                    eprintln!("{}Error:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    std::process::exit(1);
+                }
+            };
+            let spec = match parse_command_spec(&args[4..]) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    eprintln!("{}Error:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    std::process::exit(1);
+                }
+            };
+
+            match manager.add_platform_alias(
+                name.clone(),
+                platform,
+                spec.command_type,
+                spec.description,
+                spec.force,
+            ) {
+                Ok(()) => {}
+                Err(e) => {
                     eprintln!(
-                        "{}Error:{} --save and --if-saved cannot be used with --parallel",
-                        COLOR_YELLOW, COLOR_RESET
+                        "{}Error adding platform alias:{} {}",
+                        COLOR_YELLOW, COLOR_RESET, e
                     );
                     std::process::exit(1);
                 }
             }
+        }
 
-            // Validate: every --if-saved must reference an earlier --save
-            let mut defined_saves: Vec<&str> = Vec::new();
-            for cmd in &commands {
-                if let Some(ChainOperator::IfSaved { ref name, .. }) = cmd.operator {
-                    if !defined_saves.contains(&name.as_str()) {
-                        eprintln!(
-                            "{}Error:{} --if-saved references '{}' but no prior --save defines it",
-                            COLOR_YELLOW, COLOR_RESET, name
-                        );
-                        std::process::exit(1);
-                    }
-                }
-                if let Some(ref save_name) = cmd.save_as {
-                    defined_saves.push(save_name.as_str());
-                }
+        "--platform-remove" => {
+            if args.len() != 4 {
+                eprintln!(
+                    "{}Usage:{} a --platform-remove <alias> <platform>",
+                    COLOR_YELLOW, COLOR_RESET
+                );
+                std::process::exit(1);
             }
 
-            // Determine if we should create a simple or complex command
-            let has_save = commands.iter().any(|c| c.save_as.is_some());
-            let command_type = if commands.len() == 1 && !parallel && !has_save {
-                // Single command, use simple type for backward compatibility
-                CommandType::Simple(commands[0].command.clone())
-            } else {
-                // Multiple commands or parallel execution, use chain type
-                CommandType::Chain(CommandChain { commands, parallel })
+            let platform = match Platform::parse(&args[3]) {
+                Ok(platform) => platform,
+                Err(e) => {
+                    eprintln!("{}Error:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    std::process::exit(1);
+                }
             };
 
-            match manager.add_alias(name.clone(), command_type, description, force) {
-                Ok(()) => {}
+            match manager.remove_platform_alias(&args[2], platform) {
+                Ok(()) => println!(
+                    "{}Removed {} platform variant from '{}'{}",
+                    COLOR_GREEN, platform, args[2], COLOR_RESET
+                ),
                 Err(e) => {
-                    eprintln!("{}Error adding alias:{} {}", COLOR_YELLOW, COLOR_RESET, e);
+                    eprintln!(
+                        "{}Error removing platform alias:{} {}",
+                        COLOR_YELLOW, COLOR_RESET, e
+                    );
                     std::process::exit(1);
                 }
             }
@@ -2839,6 +3180,221 @@ mod tests {
         let entry = deserialized.get_alias("test").unwrap();
         assert_eq!(entry.command_display(), "echo test");
         assert_eq!(entry.description, Some("Test".to_string()));
+    }
+
+    #[test]
+    fn test_platform_variants_serialize_and_resolve() {
+        let mut config = Config::new();
+        config
+            .add_alias(
+                "co".to_string(),
+                CommandType::Simple("codex".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
+        config
+            .add_platform_alias(
+                "co",
+                Platform::Macos,
+                CommandType::Simple("a-tmux codex".to_string()),
+                true,
+            )
+            .unwrap();
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"platforms\""));
+        assert!(json.contains("\"macos\""));
+
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        let entry = deserialized.get_alias("co").unwrap();
+        assert_eq!(
+            entry.command_type_for_platform(Platform::Macos).display(),
+            "a-tmux codex"
+        );
+        assert_eq!(
+            entry.command_type_for_platform(Platform::Windows).display(),
+            "codex"
+        );
+    }
+
+    #[test]
+    fn test_base_alias_overwrite_preserves_platform_variants() {
+        let mut config = Config::new();
+        config
+            .add_alias(
+                "co".to_string(),
+                CommandType::Simple("codex".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
+        config
+            .add_platform_alias(
+                "co",
+                Platform::Linux,
+                CommandType::Simple("a-tmux codex".to_string()),
+                true,
+            )
+            .unwrap();
+
+        config
+            .add_alias(
+                "co".to_string(),
+                CommandType::Simple("codex --new".to_string()),
+                None,
+                true,
+            )
+            .unwrap();
+
+        let entry = config.get_alias("co").unwrap();
+        assert_eq!(entry.command_display(), "codex --new");
+        assert_eq!(
+            entry.command_type_for_platform(Platform::Linux).display(),
+            "a-tmux codex"
+        );
+    }
+
+    #[test]
+    fn test_platform_variant_overwrite_and_remove_rules() {
+        let mut config = Config::new();
+        config
+            .add_alias(
+                "co".to_string(),
+                CommandType::Simple("codex".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
+        assert!(config
+            .add_platform_alias(
+                "co",
+                Platform::Macos,
+                CommandType::Simple("a-tmux codex".to_string()),
+                false,
+            )
+            .unwrap());
+        assert!(!config
+            .add_platform_alias(
+                "co",
+                Platform::Macos,
+                CommandType::Simple("other codex".to_string()),
+                false,
+            )
+            .unwrap());
+
+        let entry = config.get_alias("co").unwrap();
+        assert_eq!(
+            entry.command_type_for_platform(Platform::Macos).display(),
+            "a-tmux codex"
+        );
+
+        config.remove_platform_alias("co", Platform::Macos).unwrap();
+        let entry = config.get_alias("co").unwrap();
+        assert_eq!(
+            entry.command_type_for_platform(Platform::Macos).display(),
+            "codex"
+        );
+    }
+
+    #[test]
+    fn test_execute_alias_for_platform_uses_override() {
+        let (mut manager, _temp_dir, runner, _github) =
+            create_manager_with_mocks(Vec::new(), Vec::new());
+        manager
+            .add_alias(
+                "co".to_string(),
+                CommandType::Simple("codex".to_string()),
+                None,
+                false,
+            )
+            .unwrap();
+        manager
+            .add_platform_alias(
+                "co".to_string(),
+                Platform::Macos,
+                CommandType::Simple("a-tmux codex".to_string()),
+                None,
+                true,
+            )
+            .unwrap();
+
+        manager
+            .execute_alias_for_platform("co", &["resume".to_string()], Platform::Macos)
+            .unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "a-tmux");
+        assert_eq!(calls[0].1, vec!["codex".to_string(), "resume".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_command_spec_builds_chain_without_exiting() {
+        let args = vec![
+            "cargo build".to_string(),
+            "--and".to_string(),
+            "cargo test".to_string(),
+            "--desc".to_string(),
+            "Build then test".to_string(),
+            "--force".to_string(),
+        ];
+
+        let spec = parse_command_spec(&args).expect("command spec parses");
+        assert!(spec.force);
+        assert_eq!(spec.description.as_deref(), Some("Build then test"));
+        match spec.command_type {
+            CommandType::Chain(chain) => assert_eq!(chain.commands.len(), 2),
+            other => panic!("expected chain, got {:?}", other),
+        }
+
+        let err = parse_command_spec(&["echo hi".to_string(), "--if-code".to_string()])
+            .expect_err("missing args should error");
+        assert!(err.contains("--if-code requires an exit code and a command"));
+    }
+
+    #[test]
+    fn test_invalid_persisted_platform_fails_to_load() {
+        let config = r#"
+        {
+            "aliases": {
+                "co": {
+                    "command_type": {"Simple": "codex"},
+                    "platforms": {
+                        "freebsd": {"Simple": "codex"}
+                    },
+                    "description": null,
+                    "created": "2026-06-27"
+                }
+            }
+        }
+        "#;
+
+        let err = AliasManager::parse_config_content(config)
+            .expect_err("invalid platform key should fail");
+        assert!(err.contains("freebsd"));
+    }
+
+    #[test]
+    fn test_pull_config_from_github_rejects_invalid_platform() {
+        let _env_guard = env_lock().lock().unwrap();
+        let invalid_config = r#"{"aliases":{"co":{"command_type":{"Simple":"codex"},"platforms":{"freebsd":{"Simple":"codex"}},"description":null,"created":"2026-06-27"}}}"#;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(invalid_config);
+        let responses = vec![Ok(GitHubResponse::from_json(
+            200,
+            serde_json::json!({
+                "encoding": "base64",
+                "content": encoded
+            }),
+        ))];
+        let (mut manager, _temp_dir, _runner, _github) =
+            create_manager_with_mocks(Vec::new(), responses);
+
+        let err = manager
+            .pull_config_from_github()
+            .expect_err("invalid platform should fail");
+        assert!(err.contains("freebsd"));
+        assert!(!manager.config_path.exists());
     }
 
     #[test]
@@ -4101,6 +4657,7 @@ mod tests {
     fn test_command_type_display() {
         let simple = AliasEntry {
             command_type: CommandType::Simple("echo test".to_string()),
+            platforms: BTreeMap::new(),
             description: None,
             created: "2025-01-01".to_string(),
         };
@@ -4122,6 +4679,7 @@ mod tests {
                 ],
                 parallel: false,
             }),
+            platforms: BTreeMap::new(),
             description: None,
             created: "2025-01-01".to_string(),
         };
@@ -4369,6 +4927,7 @@ mod tests {
     fn test_alias_entry_serialization() {
         let entry = AliasEntry {
             command_type: CommandType::Simple("test".to_string()),
+            platforms: BTreeMap::new(),
             description: Some("desc".to_string()),
             created: "2025-01-01".to_string(),
         };
@@ -4562,6 +5121,7 @@ mod tests {
                 ],
                 parallel: true,
             }),
+            platforms: BTreeMap::new(),
             description: None,
             created: "2025-01-01".to_string(),
         };
@@ -5313,6 +5873,7 @@ mod tests {
                 ],
                 parallel: false,
             }),
+            platforms: BTreeMap::new(),
             description: None,
             created: "2026-03-14".to_string(),
         };
@@ -5353,6 +5914,7 @@ mod tests {
                 ],
                 parallel: false,
             }),
+            platforms: BTreeMap::new(),
             description: None,
             created: "2026-03-14".to_string(),
         };

@@ -1,4 +1,4 @@
-# Alias Manager (`a`) v1.5.0
+# Alias Manager (`a`) v1.6.1
 
 A cross-platform command alias management tool written in Rust. Provides a powerful and intuitive way to create, manage, and execute command aliases with advanced features like command chaining, parallel execution, conditional logic, and parameter substitution that work seamlessly across Windows, Linux, and macOS.
 
@@ -205,6 +205,10 @@ cp target/release/a /usr/local/bin/a
 # Add a new alias
 a --add <n> <command> [--desc "description"] [--force] [--chain <command2>]
 
+# Add or remove a platform-specific command for an existing alias
+a --platform-add <n> <platform> <command> [--force]
+a --platform-remove <n> <platform>
+
 # List all aliases (or filter)
 a --list [filter]
 
@@ -265,6 +269,11 @@ a --remove deploy       # Removes the deploy alias
 # Force overwrite without confirmation
 a --add gst "git status --short" --force
 
+# Use one alias name with platform-specific behavior
+a --add co "codex --dangerously-bypass-approvals-and-sandbox"
+a --platform-add co macos "a-tmux codex --dangerously-bypass-approvals-and-sandbox"
+a --platform-add co linux "a-tmux codex --dangerously-bypass-approvals-and-sandbox"
+
 # Show where config is stored
 a --config
 
@@ -316,6 +325,34 @@ We aim to keep **line coverage ≥ 80 %** and **function coverage ≥ 75 %**. Cu
 
 The configuration file is automatically created and updated when you add/remove aliases.
 
+### Platform-Specific Aliases
+
+Every alias has a default command. You can add optional overrides for `windows`, `macos`, and `linux`; `current` is accepted as shorthand for the OS running `a`.
+
+At execution time, `a <alias>` uses the current platform override when one exists. Otherwise it falls back to the default command. `a --list` shows the active command, and `a --which <alias>` shows the default plus all platform variants.
+
+Re-running `a --add` for an existing alias updates the default command only. Existing platform variants are preserved; change them with `--platform-add` or remove them with `--platform-remove`.
+
+```bash
+# Keep Windows direct, but use a tmux wrapper on macOS/Linux
+a --add co "codex --dangerously-bypass-approvals-and-sandbox"
+a --platform-add co macos "a-tmux codex --dangerously-bypass-approvals-and-sandbox"
+a --platform-add co linux "a-tmux codex --dangerously-bypass-approvals-and-sandbox"
+
+a --add cor "codex --dangerously-bypass-approvals-and-sandbox resume --last" --desc "Resume latest Codex session"
+a --platform-add cor macos "a-tmux codex --dangerously-bypass-approvals-and-sandbox resume --last"
+a --platform-add cor linux "a-tmux codex --dangerously-bypass-approvals-and-sandbox resume --last"
+
+a --add cl "claude --permission-mode bypassPermissions --system-prompt ."
+a --platform-add cl macos "a-tmux claude --permission-mode bypassPermissions --system-prompt ."
+a --platform-add cl linux "a-tmux claude --permission-mode bypassPermissions --system-prompt ."
+
+# Remove just one override; the default alias stays intact.
+a --platform-remove co macos
+```
+
+`a` only stores and resolves the platform-specific commands. The `a-tmux` wrapper in these examples must exist separately on machines that use it.
+
 ### Sync With GitHub
 
 Repo information is hardcoded:
@@ -343,12 +380,24 @@ a --pull
 {
   "aliases": {
     "gst": {
-      "command": "git status",
+      "command_type": {
+        "Simple": "git status"
+      },
       "description": "Quick git status",
       "created": "2025-06-23"
     },
-    "deploy": {
-      "command": "docker-compose up -d",
+    "co": {
+      "command_type": {
+        "Simple": "codex --dangerously-bypass-approvals-and-sandbox"
+      },
+      "platforms": {
+        "macos": {
+          "Simple": "a-tmux codex --dangerously-bypass-approvals-and-sandbox"
+        },
+        "linux": {
+          "Simple": "a-tmux codex --dangerously-bypass-approvals-and-sandbox"
+        }
+      },
       "description": null,
       "created": "2025-06-23"
     }
@@ -437,6 +486,7 @@ The tool uses a **dispatcher pattern** with distinct namespaces:
 - Single JSON file: `~/.alias-mgr/config.json` (cross-platform)
 - Automatic serialization/deserialization with `serde`
 - **Legacy migration**: Automatically converts old format configs
+- **Platform variants**: Optional per-alias overrides for Windows, macOS, and Linux
 - **Atomic operations**: Safe concurrent access with proper file handling
 
 ### Cross-Platform Features
@@ -530,6 +580,11 @@ Parallel command execution uses:
 This ensures safe concurrent execution with proper error handling.
 
 ## Version History
+
+- **v1.6.1**:
+  - Add platform-specific alias variants with `--platform-add` and `--platform-remove`
+  - Resolve aliases to the current platform override when configured
+  - Show active platform commands in `--list` and `--which`
 
 - **v1.5.0**:
   - Fix code formatting and clippy lints for CI compliance
