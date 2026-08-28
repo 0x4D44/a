@@ -22,9 +22,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
-      - name: Apply compiler-guided cleanup and format
+      - name: Apply compiler/PROM-guided fixes and format
         run: |
           python3 .github/ci_fixups.py
+          python3 .github/ci_irq_fix.py
           cargo fmt --all
           cargo fmt --all -- --check
       - name: Clippy
