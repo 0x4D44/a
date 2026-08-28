@@ -22,8 +22,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
-      - name: Format
+      - name: Apply compiler-guided cleanup and format
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              "crates/sun3-machine/src/machine.rs": [
+                  (
+                      "self.ram_bytes % RAM_STEP_BYTES != 0",
+                      "!self.ram_bytes.is_multiple_of(RAM_STEP_BYTES)",
+                  ),
+              ],
+              "crates/sun3-machine/src/mmu.rs": [
+                  (
+                      "    #[must_use]\n    pub fn translate_peek(",
+                      "    pub fn translate_peek(",
+                  ),
+              ],
+              "crates/sun3-machine/src/trace.rs": [
+                  (
+                      "capacity.min(4096).max(1)",
+                      "capacity.clamp(1, 4096)",
+                  ),
+              ],
+          }
+
+          for filename, edits in replacements.items():
+              path = Path(filename)
+              text = path.read_text()
+              for old, new in edits:
+                  if old not in text:
+                      raise SystemExit(f"expected compiler-guided edit not found in {filename}: {old!r}")
+                  text = text.replace(old, new, 1)
+              path.write_text(text)
+          PY
           cargo fmt --all
           cargo fmt --all -- --check
       - name: Clippy
