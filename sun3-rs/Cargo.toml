@@ -1,0 +1,10 @@
+[package]
+name = "sun3"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT OR Apache-2.0"
+description = "Deterministic Sun Microsystems Sun 3/60 emulator"
+
+[dependencies]
+m68k = { git = "https://github.com/benletchford/m68k-rs", rev = "903dbcbaf6910b462fd85e22d39c232377b1771c", default-features = false }

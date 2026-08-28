@@ -1,0 +1,41 @@
+name: sun3-60
+on:
+  push:
+    branches: [sun3-60-emulator]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: sun3-rs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - name: Probe genuine Sun 3/60 firmware archive
+        run: ./scripts/probe-firmware.sh build/firmware
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Release build
+        run: cargo build --release
+      - name: Run CPU foundation probe
+        run: ./target/release/sun3 | tee build/foundation.txt
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sun3-60-probe
+          path: sun3-rs/build/
+          if-no-files-found: warn
