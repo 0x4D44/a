@@ -5,16 +5,31 @@ on:
     branches: [sun3-rs-gauntlet]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch and inspect PROM
+      - name: Fetch exact OldSilicon 3.0.1 PROM
         run: |
+          set -euo pipefail
           mkdir -p /tmp/sun3
-          curl -L --fail --retry 4 -o /tmp/sun3/boot.bin https://github.com/54weasels/sun3_60/raw/main/bootprom/boot_1810_01.BIN
-          sha256sum /tmp/sun3/boot.bin
-          stat -c '%s bytes' /tmp/sun3/boot.bin
-          xxd -g1 -l 128 /tmp/sun3/boot.bin
-          strings -a /tmp/sun3/boot.bin | head -80
+          curl -L --fail --retry 4 \
+            -o /tmp/sun3/prom.zip \
+            https://oldsilicon.com/technologies/sun-rom-images/ROMS/3.60_v3.0.1.zip
+          unzip -q /tmp/sun3/prom.zip -d /tmp/sun3/unpacked
+          rom=$(find /tmp/sun3/unpacked -type f -size 65536c -print -quit)
+          test -n "$rom"
+          test "$(sha1sum "$rom" | awk '{print $1}')" = 6e48414ce2139282e69f57612b20f7d5c475e74c
+          install -m 0644 "$rom" /tmp/sun3/sun_3.60v3.0.1
+          sha1sum /tmp/sun3/sun_3.60v3.0.1
+          sha256sum /tmp/sun3/sun_3.60v3.0.1
+          xxd -g1 -l 64 /tmp/sun3/sun_3.60v3.0.1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sun3-prom-debug
+          path: /tmp/sun3/sun_3.60v3.0.1
+          retention-days: 1
