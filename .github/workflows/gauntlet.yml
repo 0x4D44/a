@@ -1,0 +1,57 @@
+name: Sun 3/60 gauntlet
+
+on:
+  push:
+    branches: [sun3-rs-gauntlet]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-and-prom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand source under test
+        run: |
+          cat sun3-rs-source.tar.gz.b64.part* | base64 --decode > /tmp/sun3-rs-source.tar.gz
+          echo "a58d02e8a85402a94a4a533a248e7818359460ee98fceae51646531744c0fc08  /tmp/sun3-rs-source.tar.gz" | sha256sum --check
+          tar -xzf /tmp/sun3-rs-source.tar.gz
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test --workspace --all-targets
+      - name: Release build
+        run: cargo build --release
+      - name: Unmodified PROM acceptance
+        run: ./scripts/acceptance.sh
+      - name: Package source and binary
+        if: always()
+        run: |
+          mkdir -p artifacts/package
+          cp target/release/sun3 artifacts/package/ 2>/dev/null || true
+          cp Cargo.lock artifacts/package/ 2>/dev/null || true
+          cp /tmp/sun3-rs-source.tar.gz artifacts/package/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sun3-rs-gauntlet
+          path: artifacts/package
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sun3-rs-prom-evidence
+          path: |
+            artifacts/prom-boot.console
+            artifacts/prom-boot.trace
+          if-no-files-found: warn
+          retention-days: 14
