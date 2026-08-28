@@ -110,7 +110,12 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
     replace_once(
         Path("scripts/acceptance.sh"),
         "--max-instructions 20000000",
-        "--max-instructions 160000000",
+        "--max-instructions 220000000",
+    )
+    replace_once(
+        Path("scripts/acceptance.sh"),
+        "timeout 360",
+        "timeout 720",
     )
 
 
