@@ -1,0 +1,29 @@
+name: Sun3 source staging
+
+on:
+  push:
+    branches: [sun3-rs-gauntlet]
+    paths: [.github/workflows/sun3-sources.yml]
+  workflow_dispatch:
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage pinned m68k core and firmware
+        run: |
+          set -euxo pipefail
+          mkdir -p stage/vendor stage/firmware
+          git clone --filter=blob:none https://github.com/benletchford/m68k-rs.git stage/vendor/m68k
+          git -C stage/vendor/m68k checkout 2f03e921e935e8186544550ad51fe4d93cda9728
+          rm -rf stage/vendor/m68k/.git
+          curl -L --fail --retry 4 -o stage/firmware/boot_1810_01.BIN https://github.com/54weasels/sun3_60/raw/main/bootprom/boot_1810_01.BIN
+          echo '471bf34cc9313814726c2e3506d85a13291603e37b45aaffa71bc1154a2d4851  stage/firmware/boot_1810_01.BIN' | sha256sum -c -
+          tar -C stage -czf sun3-inputs.tar.gz vendor firmware
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sun3-inputs
+          path: sun3-inputs.tar.gz
+          if-no-files-found: error
+          retention-days: 7
