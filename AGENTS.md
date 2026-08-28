@@ -1,3 +1,5 @@
+[Temporary Mac IIci source archive](https://github.com/0x4D44/experiment/releases/download/maciici-bootstrap-source/snow-v1.5.0-source.tar.gz)
+
 # Repository Guidelines
 
 ## Project Structure & Module Organization
