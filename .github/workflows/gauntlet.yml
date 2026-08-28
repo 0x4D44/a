@@ -26,6 +26,7 @@ jobs:
         run: |
           python3 .github/ci_fixups.py
           python3 .github/ci_irq_fix.py
+          python3 .github/ci_rtc_fix.py
           cargo fmt --all
           cargo fmt --all -- --check
       - name: Clippy
