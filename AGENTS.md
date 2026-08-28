@@ -1,4 +1,4 @@
-[Temporary Mac IIci source archive](https://github.com/0x4D44/experiment/releases/download/maciici-bootstrap-source/snow-v1.5.0-source.tar.gz)
+[Temporary Mac IIci source archive](https://cdn.jsdelivr.net/gh/0x4D44/experiment@maciici-bootstrap-public/maciici-bootstrap/snow-v1.5.0-source.tar.gz)
 
 # Repository Guidelines
 
