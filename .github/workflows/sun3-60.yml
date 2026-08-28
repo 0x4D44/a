@@ -24,6 +24,13 @@ jobs:
         run: ./scripts/probe-firmware.sh build/firmware
       - name: Fetch passing QEMU Sun-3 reference patches
         run: python3 scripts/fetch-qemu-sun3-patches.py build/qemu-patches
+      - name: Capture pinned 68020 core source
+        run: |
+          cargo fetch
+          manifest=$(find "$HOME/.cargo/git/checkouts" -type f -path '*/903dbcb/Cargo.toml' -print -quit)
+          test -n "$manifest"
+          mkdir -p build
+          cp -a "$(dirname "$manifest")" build/m68k-source
       - name: Format
         run: cargo fmt --check
       - name: Test
