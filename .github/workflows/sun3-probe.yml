@@ -1,0 +1,20 @@
+name: Sun3 firmware probe
+
+on:
+  push:
+    branches: [sun3-rs-gauntlet]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch and inspect PROM
+        run: |
+          mkdir -p /tmp/sun3
+          curl -L --fail --retry 4 -o /tmp/sun3/boot.bin https://github.com/54weasels/sun3_60/raw/main/bootprom/boot_1810_01.BIN
+          sha256sum /tmp/sun3/boot.bin
+          stat -c '%s bytes' /tmp/sun3/boot.bin
+          xxd -g1 -l 128 /tmp/sun3/boot.bin
+          strings -a /tmp/sun3/boot.bin | head -80
