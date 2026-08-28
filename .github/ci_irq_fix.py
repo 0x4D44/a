@@ -107,15 +107,19 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 
     # Leave enough execution budget for POST, the full 4 MiB memory walk, the
     # PROM's ten-second menu window, and its no-device autoboot fallback.
+    acceptance = Path("scripts/acceptance.sh")
     replace_once(
-        Path("scripts/acceptance.sh"),
+        acceptance,
         "--max-instructions 20000000",
         "--max-instructions 220000000",
     )
+    replace_once(acceptance, "timeout 360", "timeout 720")
+    # Retain decisive MMU/IRQ/serial evidence while avoiding millions of
+    # redundant SCC status-read trace records during the ten-second poll loop.
     replace_once(
-        Path("scripts/acceptance.sh"),
-        "timeout 360",
-        "timeout 720",
+        acceptance,
+        "--trace mmu,device,irq,serial",
+        "--trace mmu,irq,serial",
     )
 
 
