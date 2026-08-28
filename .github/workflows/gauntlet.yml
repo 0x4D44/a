@@ -46,6 +46,56 @@ jobs:
                       "capacity.clamp(1, 4096)",
                   ),
               ],
+              "crates/sun3-cli/src/main.rs": [
+                  (
+                      """    if report.reached_prompt() {
+        if let Some(command) = &cli.command {
+            let mut bytes = command.clone();
+            if !bytes.ends_with(b\"\\r\") && !bytes.ends_with(b\"\\n\") {
+                bytes.push(b'\\r');
+            }
+            machine.push_console_bytes(&bytes);
+            let command_report = machine.run(&RunOptions {
+                max_instructions: cli.max_instructions,
+                prompt: cli.prompt.clone(),
+                stop_on_prompt: true,
+            });
+            command_ok = command_report.reached_prompt();
+        }
+    }
+""",
+                      """    if report.reached_prompt()
+        && let Some(command) = &cli.command
+    {
+        let mut bytes = command.clone();
+        if !bytes.ends_with(b\"\\r\") && !bytes.ends_with(b\"\\n\") {
+            bytes.push(b'\\r');
+        }
+        machine.push_console_bytes(&bytes);
+        let command_report = machine.run(&RunOptions {
+            max_instructions: cli.max_instructions,
+            prompt: cli.prompt.clone(),
+            stop_on_prompt: true,
+        });
+        command_ok = command_report.reached_prompt();
+    }
+""",
+                  ),
+                  (
+                      """        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+""",
+                      """        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
+        }
+""",
+                  ),
+              ],
           }
 
           for filename, edits in replacements.items():
