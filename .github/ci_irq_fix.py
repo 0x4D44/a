@@ -105,6 +105,14 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 """,
     )
 
+    # The parity issue is resolved; restore the full acceptance budget so the
+    # genuine PROM can complete its destructive 4 MiB memory test.
+    replace_once(
+        Path("scripts/acceptance.sh"),
+        "--max-instructions 20000000",
+        "--max-instructions 80000000",
+    )
+
 
 if __name__ == "__main__":
     main()
