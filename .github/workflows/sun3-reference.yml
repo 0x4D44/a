@@ -1,0 +1,29 @@
+name: Sun3 reference staging
+
+on:
+  push:
+    branches: [sun3-rs-gauntlet]
+    paths: [.github/workflows/sun3-reference.yml]
+  workflow_dispatch:
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch public QEMU Sun-3 patch series
+        run: |
+          set -euxo pipefail
+          mkdir reference
+          for n in 2 3 4 5 6 7 8; do
+            curl -L --fail --retry 4 \
+              -o "reference/patch-${n}.eml" \
+              "https://lore.kernel.org/qemu-devel/20260503015756.99176-${n}-54weasels@gmail.com/raw"
+          done
+          tar -czf sun3-qemu-reference.tar.gz reference
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sun3-qemu-reference
+          path: sun3-qemu-reference.tar.gz
+          if-no-files-found: error
+          retention-days: 7
