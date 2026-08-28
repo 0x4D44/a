@@ -22,6 +22,8 @@ jobs:
           components: rustfmt, clippy
       - name: Probe genuine Sun 3/60 firmware archive
         run: ./scripts/probe-firmware.sh build/firmware
+      - name: Fetch passing QEMU Sun-3 reference patches
+        run: python3 scripts/fetch-qemu-sun3-patches.py build/qemu-patches
       - name: Format
         run: cargo fmt --check
       - name: Test
