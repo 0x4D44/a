@@ -1,4 +1,4 @@
-name: sun3-bootstrap
+name: sun3-rust-gauntlet
 
 on:
   push:
@@ -9,56 +9,77 @@ permissions:
   contents: read
 
 jobs:
-  bootstrap:
+  build-test-boot:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Acquire public reference material and genuine PROM
-        shell: bash
+      - name: Expand source package
         run: |
-          set -euxo pipefail
-          mkdir -p bootstrap/http
-          git clone --depth 1 https://github.com/benletchford/m68k-rs.git bootstrap/m68k-rs
-          git clone --depth 1 https://github.com/54weasels/sun3_60.git bootstrap/sun3_60
+          mkdir sun3-rs
+          tar -xzf sun3-rs.tar.gz -C sun3-rs
+
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+
+      - name: Acquire and verify genuine Sun 3/60 PROM
+        run: |
+          mkdir -p firmware
           curl -fL --retry 3 \
             https://raw.githubusercontent.com/54weasels/sun3_60/main/bootprom/boot_1810_01.BIN \
-            -o bootstrap/boot_1810_01.BIN
-          echo '471bf34cc9313814726c2e3506d85a13291603e37b45aaffa71bc1154a2d4851  bootstrap/boot_1810_01.BIN' | sha256sum -c -
+            -o firmware/boot_1810_01.BIN
+          echo '471bf34cc9313814726c2e3506d85a13291603e37b45aaffa71bc1154a2d4851  firmware/boot_1810_01.BIN' | sha256sum -c -
 
-          urls=(
-            'https://lore.kernel.org/qemu-devel/20260503015756.99176-1-54weasels@gmail.com/raw'
-            'https://patchew.org/QEMU/20260503015756.99176-1-54weasels%40gmail.com/mbox'
-            'https://patchew.org/QEMU/20260503015756.99176-1-54weasels%40gmail.com/mbox/'
-            'https://patchew.org/QEMU/20260503015756.99176-1-54weasels%40gmail.com.mbox'
-            'https://www.mail-archive.com/qemu-devel%40nongnu.org/msg1188138.html'
-          )
-          n=0
-          for url in "${urls[@]}"; do
-            n=$((n+1))
-            curl -L --retry 2 --connect-timeout 20 --max-time 120 \
-              -D "bootstrap/http/$n.headers" "$url" -o "bootstrap/http/$n.body" || true
-            printf '%s\n' "$url" > "bootstrap/http/$n.url"
-            file "bootstrap/http/$n.body" || true
-            wc -c "bootstrap/http/$n.body" || true
-          done
+      - name: Formatting
+        working-directory: sun3-rs
+        run: cargo fmt --check
 
-          find bootstrap -type d -name .git -prune -exec rm -rf {} +
-          find bootstrap -maxdepth 3 -type f -printf '%p %s bytes\n' | sort > bootstrap/manifest.txt
+      - name: Unit and architecture tests
+        working-directory: sun3-rs
+        run: cargo test --all-targets
 
-      - name: Verify Rust toolchain availability
-        uses: dtolnay/rust-toolchain@stable
+      - name: Clippy
+        working-directory: sun3-rs
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Record toolchain
+      - name: Release build
+        working-directory: sun3-rs
+        run: cargo build --release
+
+      - name: Genuine PROM interactive-monitor acceptance test
+        working-directory: sun3-rs
         run: |
-          rustc --version | tee bootstrap/rustc-version.txt
-          cargo --version | tee bootstrap/cargo-version.txt
+          mkdir -p artifacts
+          ./target/release/sun3 \
+            --machine sun3-60 \
+            --rom ../firmware/boot_1810_01.BIN \
+            --ram 4M \
+            --headless \
+            --expect-monitor \
+            --max-instructions 250000000 \
+            --transcript artifacts/prom-console.txt \
+            --trace-prom \
+            --trace-capacity 8192 \
+            2> artifacts/boot-diagnostics.txt | tee artifacts/prom-console-stdout.txt
 
-      - name: Upload bootstrap corpus
+      - name: Record evidence
+        if: always()
+        working-directory: sun3-rs
+        run: |
+          rustc --version > artifacts/toolchain.txt
+          cargo --version >> artifacts/toolchain.txt
+          sha256sum ../firmware/boot_1810_01.BIN > artifacts/prom-sha256.txt
+          git -C .. rev-parse HEAD > artifacts/revision.txt
+
+      - name: Upload evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sun3-bootstrap-corpus
-          path: bootstrap
-          retention-days: 7
-          if-no-files-found: error
+          name: sun3-rust-evidence
+          path: sun3-rs/artifacts
+          retention-days: 14
+          if-no-files-found: warn
