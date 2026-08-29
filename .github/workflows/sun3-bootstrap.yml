@@ -1,0 +1,64 @@
+name: sun3-bootstrap
+
+on:
+  push:
+    branches: [sun3-gauntlet]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Acquire public reference material and genuine PROM
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p bootstrap/http
+          git clone --depth 1 https://github.com/benletchford/m68k-rs.git bootstrap/m68k-rs
+          git clone --depth 1 https://github.com/54weasels/sun3_60.git bootstrap/sun3_60
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/54weasels/sun3_60/main/bootprom/boot_1810_01.BIN \
+            -o bootstrap/boot_1810_01.BIN
+          echo '471bf34cc9313814726c2e3506d85a13291603e37b45aaffa71bc1154a2d4851  bootstrap/boot_1810_01.BIN' | sha256sum -c -
+
+          urls=(
+            'https://lore.kernel.org/qemu-devel/20260503015756.99176-1-54weasels@gmail.com/raw'
+            'https://patchew.org/QEMU/20260503015756.99176-1-54weasels%40gmail.com/mbox'
+            'https://patchew.org/QEMU/20260503015756.99176-1-54weasels%40gmail.com/mbox/'
+            'https://patchew.org/QEMU/20260503015756.99176-1-54weasels%40gmail.com.mbox'
+            'https://www.mail-archive.com/qemu-devel%40nongnu.org/msg1188138.html'
+          )
+          n=0
+          for url in "${urls[@]}"; do
+            n=$((n+1))
+            curl -L --retry 2 --connect-timeout 20 --max-time 120 \
+              -D "bootstrap/http/$n.headers" "$url" -o "bootstrap/http/$n.body" || true
+            printf '%s\n' "$url" > "bootstrap/http/$n.url"
+            file "bootstrap/http/$n.body" || true
+            wc -c "bootstrap/http/$n.body" || true
+          done
+
+          find bootstrap -type d -name .git -prune -exec rm -rf {} +
+          find bootstrap -maxdepth 3 -type f -printf '%p %s bytes\n' | sort > bootstrap/manifest.txt
+
+      - name: Verify Rust toolchain availability
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Record toolchain
+        run: |
+          rustc --version | tee bootstrap/rustc-version.txt
+          cargo --version | tee bootstrap/cargo-version.txt
+
+      - name: Upload bootstrap corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: sun3-bootstrap-corpus
+          path: bootstrap
+          retention-days: 7
+          if-no-files-found: error
