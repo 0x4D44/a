@@ -43,7 +43,12 @@ jobs:
 
       - name: Formatting
         working-directory: sun3-rs
-        run: cargo fmt --check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt
+          cargo fmt --check
+          tar --exclude='./target' --exclude='./artifacts' -czf ../sun3-rs-formatted.tar.gz .
 
       - name: Unit and architecture tests
         working-directory: sun3-rs
@@ -89,5 +94,14 @@ jobs:
         with:
           name: sun3-rust-evidence
           path: sun3-rs/artifacts
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload formatted source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sun3-rust-formatted-source
+          path: sun3-rs-formatted.tar.gz
           retention-days: 14
           if-no-files-found: warn
