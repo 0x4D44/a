@@ -1,3 +1,14 @@
+--- a/src/bus.rs
++++ b/src/bus.rs
+@@ -71,7 +71,7 @@
+             ));
+         }
+         if !(4 * 1024 * 1024..=24 * 1024 * 1024).contains(&ram_size)
+-            || ram_size % (4 * 1024 * 1024) != 0
++            || !ram_size.is_multiple_of(4 * 1024 * 1024)
+         {
+             return Err("RAM must be 4, 8, 12, 16, 20 or 24 MiB".into());
+         }
 --- a/src/machine.rs
 +++ b/src/machine.rs
 @@ -48,7 +48,6 @@
@@ -8,3 +19,156 @@
  pub struct Sun3Machine {
      /// MC68020 architectural state.
      pub cpu: CpuCore,
+@@ -190,12 +189,14 @@
+         let mut first_prompt_at = None;
+         let mut injected_probe = false;
+         let mut diagnostic = None;
++        let mut scheduler_steps = 0_u64;
+ 
+-        while self.instructions < max_instructions {
++        while scheduler_steps < max_instructions {
+             if let Err(error) = self.step() {
+                 diagnostic = Some(error);
+                 break;
+             }
++            scheduler_steps = scheduler_steps.saturating_add(1);
+ 
+             let output = self.take_console_output();
+             if !output.is_empty() {
+@@ -217,24 +218,24 @@
+                     self.inject_console(b"\r");
+                     injected_probe = true;
+                 }
+-                if let Some(first) = first_prompt_at {
+-                    if prompt_positions.iter().any(|position| *position > first) {
+-                        return RunOutcome {
+-                            interactive_monitor: true,
+-                            instructions: self.instructions,
+-                            cycles: self.bus.cycles(),
+-                            transcript,
+-                            pc: self.cpu.pc,
+-                            diagnostic: None,
+-                        };
+-                    }
++                if let Some(first) = first_prompt_at
++                    && prompt_positions.iter().any(|position| *position > first)
++                {
++                    return RunOutcome {
++                        interactive_monitor: true,
++                        instructions: self.instructions,
++                        cycles: self.bus.cycles(),
++                        transcript,
++                        pc: self.cpu.pc,
++                        diagnostic: None,
++                    };
+                 }
+             }
+         }
+ 
+         if diagnostic.is_none() {
+             diagnostic = Some(format!(
+-                "instruction limit {max_instructions} reached at pc={:08x}",
++                "execution-step limit {max_instructions} reached at pc={:08x}",
+                 self.cpu.pc
+             ));
+         }
+--- a/src/mmu.rs
++++ b/src/mmu.rs
+@@ -208,41 +208,23 @@
+ 
+         if pte & PTE_VALID == 0 {
+             self.bus_error |= 0x80;
+-            self.trace_fault(
+-                virtual_address,
+-                access,
+-                pmeg,
+-                pte,
+-                "invalid",
+-                trace_flags,
+-                trace,
+-            );
++            if trace_flags.mmu || trace_flags.bus {
++                self.trace_fault(virtual_address, access, pmeg, pte, "invalid", trace);
++            }
+             return Err(FaultReason::Invalid);
+         }
+         if !access.supervisor && pte & PTE_SYSTEM != 0 {
+             self.bus_error |= 0x40;
+-            self.trace_fault(
+-                virtual_address,
+-                access,
+-                pmeg,
+-                pte,
+-                "system",
+-                trace_flags,
+-                trace,
+-            );
++            if trace_flags.mmu || trace_flags.bus {
++                self.trace_fault(virtual_address, access, pmeg, pte, "system", trace);
++            }
+             return Err(FaultReason::Protection);
+         }
+         if access.write && pte & PTE_WRITE == 0 {
+             self.bus_error |= 0x40;
+-            self.trace_fault(
+-                virtual_address,
+-                access,
+-                pmeg,
+-                pte,
+-                "write-protect",
+-                trace_flags,
+-                trace,
+-            );
++            if trace_flags.mmu || trace_flags.bus {
++                self.trace_fault(virtual_address, access, pmeg, pte, "write-protect", trace);
++            }
+             return Err(FaultReason::Protection);
+         }
+ 
+@@ -265,15 +247,9 @@
+ 
+         if !valid_physical(physical, ram_size) {
+             self.bus_error |= 0x20;
+-            self.trace_fault(
+-                virtual_address,
+-                access,
+-                pmeg,
+-                pte,
+-                "timeout",
+-                trace_flags,
+-                trace,
+-            );
++            if trace_flags.mmu || trace_flags.bus {
++                self.trace_fault(virtual_address, access, pmeg, pte, "timeout", trace);
++            }
+             return Err(FaultReason::Timeout);
+         }
+ 
+@@ -296,19 +272,16 @@
+         pmeg: usize,
+         pte: u32,
+         reason: &str,
+-        flags: TraceFlags,
+         trace: &mut TraceRing,
+     ) {
+-        if flags.mmu || flags.bus {
+-            trace.push(format!(
+-                "FAULT va={address:08x} fc={} {}{} sup={} pmeg={pmeg:02x} pte={pte:08x} reason={reason} ber={:02x}",
+-                access.function_code,
+-                if access.write { "W" } else { "R" },
+-                access.width,
+-                access.supervisor,
+-                self.bus_error
+-            ));
+-        }
++        trace.push(format!(
++            "FAULT va={address:08x} fc={} {}{} sup={} pmeg={pmeg:02x} pte={pte:08x} reason={reason} ber={:02x}",
++            access.function_code,
++            if access.write { "W" } else { "R" },
++            access.width,
++            access.supervisor,
++            self.bus_error
++        ));
+     }
+ 
+     pub fn read_bus_error(&mut self) -> u8 {

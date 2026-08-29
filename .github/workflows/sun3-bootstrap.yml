@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reassemble, patch, and expand source package
+      - name: Reassemble and expand source package
         shell: bash
         run: |
           set -euo pipefail
@@ -23,7 +23,6 @@ jobs:
           echo '19f62913535d2719d37b89884143ac3823482cecb912d8d139edd00547f54077  sun3-rs.tar.gz' | sha256sum -c -
           mkdir sun3-rs
           tar -xzf sun3-rs.tar.gz -C sun3-rs
-          patch -d sun3-rs -p1 < ci-fixes.patch
           mkdir -p sun3-rs/artifacts
 
       - name: Install Rust 1.93
@@ -42,11 +41,13 @@ jobs:
             -o firmware/boot_1810_01.BIN
           echo '471bf34cc9313814726c2e3506d85a13291603e37b45aaffa71bc1154a2d4851  firmware/boot_1810_01.BIN' | sha256sum -c -
 
-      - name: Formatting
+      - name: Apply fixes and verify formatting
         working-directory: sun3-rs
         shell: bash
         run: |
           set -euo pipefail
+          cargo fmt
+          patch -p1 < ../ci-fixes.patch
           cargo fmt
           cargo fmt --check
           tar --exclude='./target' --exclude='./artifacts' -czf ../sun3-rs-formatted.tar.gz .
