@@ -1,0 +1,10 @@
+--- a/src/machine.rs
++++ b/src/machine.rs
+@@ -48,7 +48,6 @@
+ }
+ 
+ /// A complete single-CPU Sun 3/60 machine.
+-#[derive(Debug)]
+ pub struct Sun3Machine {
+     /// MC68020 architectural state.
+     pub cpu: CpuCore,

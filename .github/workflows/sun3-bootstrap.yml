@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reassemble and expand source package
+      - name: Reassemble, patch, and expand source package
         shell: bash
         run: |
           set -euo pipefail
@@ -23,6 +23,7 @@ jobs:
           echo '19f62913535d2719d37b89884143ac3823482cecb912d8d139edd00547f54077  sun3-rs.tar.gz' | sha256sum -c -
           mkdir sun3-rs
           tar -xzf sun3-rs.tar.gz -C sun3-rs
+          patch -d sun3-rs -p1 < ci-fixes.patch
           mkdir -p sun3-rs/artifacts
 
       - name: Install Rust 1.93
