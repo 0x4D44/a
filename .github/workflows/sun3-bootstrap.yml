@@ -15,10 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Expand source package
+      - name: Reassemble and expand source package
+        shell: bash
         run: |
+          set -euo pipefail
+          cat archive/part* > sun3-rs.tar.gz
+          echo '19f62913535d2719d37b89884143ac3823482cecb912d8d139edd00547f54077  sun3-rs.tar.gz' | sha256sum -c -
           mkdir sun3-rs
           tar -xzf sun3-rs.tar.gz -C sun3-rs
+          mkdir -p sun3-rs/artifacts
 
       - name: Install Rust 1.93
         uses: dtolnay/rust-toolchain@master
@@ -27,7 +32,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Acquire and verify genuine Sun 3/60 PROM
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p firmware
           curl -fL --retry 3 \
             https://raw.githubusercontent.com/54weasels/sun3_60/main/bootprom/boot_1810_01.BIN \
@@ -53,7 +60,6 @@ jobs:
       - name: Genuine PROM interactive-monitor acceptance test
         working-directory: sun3-rs
         run: |
-          mkdir -p artifacts
           ./target/release/sun3 \
             --machine sun3-60 \
             --rom ../firmware/boot_1810_01.BIN \
@@ -69,11 +75,13 @@ jobs:
       - name: Record evidence
         if: always()
         working-directory: sun3-rs
+        shell: bash
         run: |
-          rustc --version > artifacts/toolchain.txt
-          cargo --version >> artifacts/toolchain.txt
-          sha256sum ../firmware/boot_1810_01.BIN > artifacts/prom-sha256.txt
-          git -C .. rev-parse HEAD > artifacts/revision.txt
+          mkdir -p artifacts
+          rustc --version > artifacts/toolchain.txt || true
+          cargo --version >> artifacts/toolchain.txt || true
+          sha256sum ../firmware/boot_1810_01.BIN > artifacts/prom-sha256.txt 2>/dev/null || true
+          git -C .. rev-parse HEAD > artifacts/revision.txt || true
 
       - name: Upload evidence
         if: always()
